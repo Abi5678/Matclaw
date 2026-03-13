@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: matclaw
+Version: 0.1.0
+Summary: High-end autonomous agent bridge for MATLAB via MCP.
+Author-email: MatClaw <dev@matclaw.local>
+Requires-Python: >=3.11
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: pydantic-settings>=2.2.0
+Requires-Dist: watchdog>=4.0.0
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: pandas>=2.2.0
+Requires-Dist: plotly>=5.24.0
+Requires-Dist: scipy>=1.13.0
+Requires-Dist: streamlit>=1.39.0
+Requires-Dist: chromadb>=0.4.0
+Requires-Dist: python-telegram-bot>=21.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: anthropic>=0.18.0
+Requires-Dist: uvloop>=0.20.0; platform_system != "Windows"
+Requires-Dist: structlog>=24.1.0
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"

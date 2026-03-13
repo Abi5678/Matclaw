@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matclaw"
+version = "0.1.0"
+description = "High-end autonomous agent bridge for MATLAB via MCP."
+authors = [{ name = "MatClaw", email = "dev@matclaw.local" }]
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "watchdog>=4.0.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "plotly>=5.24.0",
+    "scipy>=1.13.0",
+    "streamlit>=1.39.0",
+    "chromadb>=0.4.0",
+    "python-telegram-bot>=21.0",
+    "python-dotenv>=1.0.0",
+    "anthropic>=0.18.0",
+    "google-generativeai>=0.8.0",
+    "openai>=1.0.0",
+    "uvloop>=0.20.0; platform_system != 'Windows'",
+    "structlog>=24.1.0",
+]
+
+[project.scripts]
+matclaw-mcp = "src.matclaw.mcp.server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

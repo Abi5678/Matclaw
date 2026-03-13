@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "matclaw": {
+      "command": "python",
+      "args": [
+        "-m",
+        "src.matclaw.mcp.server"
+      ],
+      "env": {
+        "MATCLAW_LOGGING__LEVEL": "INFO"
+      }
+    }
+  }
+}
+

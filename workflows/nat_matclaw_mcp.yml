@@ -1,0 +1,54 @@
+# NVIDIA NeMo Agent Toolkit workflow: MatClaw MCP Client
+#
+# This workflow connects to the MatClaw MCP server and uses its tools
+# (run_matlab_code, trigger_skill, run_workspace_auditor, etc.) with
+# a ReAct agent powered by NVIDIA Nemotron.
+#
+# Prerequisites:
+#   1. Start MatClaw MCP server with HTTP transport:
+#      python -m src.matclaw.mcp.server --http
+#      (runs at http://127.0.0.1:9901/mcp)
+#
+#   2. Set NVIDIA_API_KEY:
+#      export NVIDIA_API_KEY=your_nvapi_key
+#
+#   3. Install NAT with MCP support:
+#      pip install "nvidia-nat[mcp]"
+#
+# Run:
+#   nat run --config_file workflows/nat_matclaw_mcp.yml --input "Plot a sine wave"
+#   nat run --config_file workflows/nat_matclaw_mcp.yml --input "Check my workspace"
+#   nat run --config_file workflows/nat_matclaw_mcp.yml --input "What was the last stable gain?"
+#
+# Or launch the NAT UI:
+#   nat serve --config_file workflows/nat_matclaw_mcp.yml
+#   # Then open the UI and chat with the agent
+
+function_groups:
+  matclaw:
+    _type: mcp_client
+    server:
+      transport: streamable-http
+      url: "http://127.0.0.1:9901/mcp"
+    tool_call_timeout: 120  # MATLAB ops can take time
+    include:
+      - run_matlab_code
+      - trigger_skill
+      - run_workspace_auditor
+      - run_pid_optimizer
+      - run_report_generator
+      - list_available_skills
+
+llms:
+  nemotron:
+    _type: nim
+    model_name: nvidia/nvidia-nemotron-nano-9b-v2
+    temperature: 0.0
+
+workflow:
+  _type: react_agent
+  tool_names:
+    - matclaw
+  llm_name: nemotron
+  verbose: true
+  parse_agent_response_max_retries: 3

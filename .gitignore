@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+
+*.mat
+*.dat
+*.log
+
+.env
+.mypy_cache/
+.matclaw_chromadb/
+
