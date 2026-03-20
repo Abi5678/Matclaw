@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
@@ -9,8 +10,10 @@ from typing import Any, Callable, Dict, Optional
 from pydantic import BaseModel
 
 from src.matclaw.config.base_config import MatlabSettings
+from src.matclaw.security.guardrail import guard_matlab_call
 
 logger = logging.getLogger(__name__)
+DEFAULT_MATLAB_CALL_TIMEOUT_SECONDS = 300.0
 
 
 try:  # Pragmatic import guard so the project works without MATLAB installed.
@@ -92,8 +95,26 @@ class MatlabBridge:
             try:
                 logger.info("Starting MATLAB engine session...")
                 if self.settings.session_name:
+                    req = MatlabCallRequest(
+                        function="connect_matlab",
+                        args=[self.settings.session_name],
+                        nargout=0,
+                    )
+                    decision = guard_matlab_call(req)
+                    if not decision.allow:
+                        logger.warning("Guardrail blocked connect_matlab: %s", decision.reason)
+                        self._state.engine = None
+                        self._state.healthy = False
+                        return
                     self._state.engine = matlab.engine.connect_matlab(self.settings.session_name)
                 else:
+                    req = MatlabCallRequest(function="start_matlab", args=[], nargout=0)
+                    decision = guard_matlab_call(req)
+                    if not decision.allow:
+                        logger.warning("Guardrail blocked start_matlab: %s", decision.reason)
+                        self._state.engine = None
+                        self._state.healthy = False
+                        return
                     self._state.engine = matlab.engine.start_matlab()
                 self._state.healthy = True
                 logger.info("MATLAB engine started successfully.")
@@ -107,8 +128,19 @@ class MatlabBridge:
             if self._state.engine is None:
                 return
             try:
-                logger.info("Shutting down MATLAB engine.")
-                self._state.engine.quit()
+                if self.settings.session_name:
+                    # Shared session: just release the reference without killing MATLAB.
+                    # The MATLAB desktop continues running for the user.
+                    logger.info("Releasing shared MATLAB session '%s' (not quitting).", self.settings.session_name)
+                    # No quit() — just drop the reference
+                else:
+                    logger.info("Shutting down MATLAB engine.")
+                    req = MatlabCallRequest(function="quit", args=[], nargout=0)
+                    decision = guard_matlab_call(req)
+                    if not decision.allow:
+                        logger.warning("Guardrail blocked engine quit: %s", decision.reason)
+                    else:
+                        self._state.engine.quit()
             except Exception:  # pragma: no cover - environment-specific
                 logger.exception("Error while shutting down MATLAB engine.")
             finally:
@@ -131,6 +163,12 @@ class MatlabBridge:
             return
         with self._lock:
             try:
+                # Guardrail mandate: even non-`eval` MATLAB operations should pass.
+                req = MatlabCallRequest(function="addpath", args=[path], nargout=0)
+                decision = guard_matlab_call(req)
+                if not decision.allow:
+                    logger.warning("Guardrail blocked addpath: %s", decision.reason)
+                    return
                 self._state.engine.addpath(path, nargout=0)
             except Exception:
                 logger.exception("Failed to addpath in MATLAB: %s", path)
@@ -162,6 +200,28 @@ class MatlabBridge:
             except Exception:
                 logger.exception("before_call callback failed")
 
+        # Guardrails: every MATLAB call request must pass before execution.
+        try:
+            decision = guard_matlab_call(request)
+            if not decision.allow:
+                logger.warning(
+                    "Guardrail blocked MATLAB call: function=%s reason=%s",
+                    request.function,
+                    decision.reason,
+                )
+                return MatlabCallResult(success=False, error=decision.reason)
+        except Exception as exc:
+            # Fail-closed for safety if guardrail itself errors.
+            logger.exception("Guardrail failed (fail-closed): %s", exc)
+            return MatlabCallResult(success=False, error="Guardrail failure: refusing MATLAB execution.")
+
+        timed_out = False
+        timeout_seconds = (
+            float(request.timeout_seconds)
+            if request.timeout_seconds is not None
+            else DEFAULT_MATLAB_CALL_TIMEOUT_SECONDS
+        )
+
         with self._lock:
             try:
                 logger.info(
@@ -175,26 +235,55 @@ class MatlabBridge:
                 eng = self._state.engine
                 func = getattr(eng, request.function)
 
-                if request.timeout_seconds is not None:
-                    result = func(
-                        *request.args,
-                        nargout=request.nargout,
-                        background=False,
-                        **request.kwargs,
-                    )
-                else:
-                    result = func(
+                def _invoke() -> Any:
+                    return func(
                         *request.args,
                         nargout=request.nargout,
                         **request.kwargs,
                     )
 
-                self._state.healthy = True
-                return MatlabCallResult(success=True, result=result)
+                if timeout_seconds > 0:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(_invoke)
+                        try:
+                            result = future.result(timeout=timeout_seconds)
+                        except FuturesTimeoutError:
+                            timed_out = True
+                            failure = MatlabCallResult(
+                                success=False,
+                                error=f"MATLAB call timed out after {timeout_seconds:.1f}s: {request.function}",
+                            )
+                else:
+                    result = _invoke()
+
+                if timed_out:
+                    self._state.healthy = False
+                    logger.error("MATLAB call timed out: function=%s timeout=%.1fs", request.function, timeout_seconds)
+                    # Cleanup must happen outside the bridge lock.
+                    pass
+                else:
+                    self._state.healthy = True
+                    return MatlabCallResult(success=True, result=result)
+
             except Exception as exc:  # pragma: no cover - MATLAB dependent
                 logger.exception("MATLAB call failed: %s", exc)
-                self._state.healthy = False
+                # MatlabExecutionError means MATLAB ran but the *code* failed —
+                # the engine itself is still alive.  Only mark unhealthy for true
+                # connection failures (timeout handled above, other errors below).
+                exc_type = type(exc).__name__
+                is_code_error = exc_type in (
+                    "MatlabExecutionError", "MatlabExecutionException",
+                    "MatlabRuntimeError",
+                )
+                if not is_code_error:
+                    self._state.healthy = False
                 failure = MatlabCallResult(success=False, error=str(exc))
+
+        if timed_out:
+            try:
+                self.stop()
+            except Exception:
+                logger.exception("Failed stopping MATLAB engine after timeout.")
 
         # Outside the lock, optionally invoke the autonomous debugging loop.
         if self._debug_agent is not None and failure.error:

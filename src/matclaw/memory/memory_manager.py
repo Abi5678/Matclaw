@@ -78,6 +78,22 @@ class MemoryManager:
         )
         logger.info("MemoryManager ChromaDB ready at %s", self._persist_dir)
 
+    # ------------------------------------------------------------------
+    # Public properties so KnowledgeBase can share the ChromaDB client
+    # ------------------------------------------------------------------
+
+    @property
+    def chroma_client(self):
+        """Return the underlying ChromaDB PersistentClient (initialised lazily)."""
+        self._ensure_client()
+        return self._client
+
+    @property
+    def embed_fn(self):
+        """Return the embedding function used by this manager (may be ``None``)."""
+        self._ensure_client()
+        return self._embed_fn
+
     def store_artifact(self, key: str, metadata: dict[str, Any], vector: list[float] | None = None) -> None:
         """
         Store an artifact by key with metadata and optional vector.
@@ -150,6 +166,34 @@ class MemoryManager:
             dist = dists[i] if i < len(dists) else 0
             out.append({"metadata": meta or {}, "document": doc, "distance": dist})
         return out
+
+    def query_experiment(self, experiment_id: str, n_results: int = 20) -> list[dict[str, Any]]:
+        """
+        Return artifacts linked to a specific experiment_id.
+        """
+        self._ensure_client()
+        count = self._collection.count()
+        n = min(max(1, n_results), count) if count else 0
+        if n == 0:
+            return []
+        results = self._collection.get(
+            where={"experiment_id": experiment_id},
+            limit=n,
+            include=["metadatas", "documents"],
+        )
+        metas = results.get("metadatas") or []
+        docs = results.get("documents") or []
+        out: list[dict[str, Any]] = []
+        for i, meta in enumerate(metas):
+            out.append({"metadata": meta or {}, "document": docs[i] if i < len(docs) else ""})
+        return out
+
+    def query_experiment_metric(self, metric_key: str, n_results: int = 20) -> list[dict[str, Any]]:
+        """
+        Lightweight helper to search memory for artifacts containing a metric key.
+        Uses semantic query fallback so this works regardless of Chroma metadata schema.
+        """
+        return self.query_context(f"experiment metric {metric_key}", n_results=n_results)
 
     def close(self) -> None:
         self._client = None

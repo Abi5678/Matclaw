@@ -1,0 +1,62 @@
+"""
+Application entry helpers: wire shared ``RPIExecutor`` and gateways.
+
+Example — start the hybrid (voice + clipboard) keystroke gateway alongside your app::
+
+    from src.matclaw.config.base_config import MatClawSettings
+    from src.matclaw.core.rpi_executor import RPIExecutor
+    from src.matclaw.gateways.voice_client import BufferedVoiceClient
+    from src.matclaw.main import start_hybrid_keystroke_gateway
+
+    settings = MatClawSettings()
+    executor = RPIExecutor(matlab_bridge=bridge, memory_manager=memory)
+    voice_client = BufferedVoiceClient()
+
+    # Your voice/ASR pipeline should call ``voice_client.set_transcript(text)`` as transcripts arrive.
+
+    keystroke_gateway = start_hybrid_keystroke_gateway(
+        executor,
+        voice_client,
+        settings=settings,
+    )
+    # ... run Streamlit / daemon; on shutdown: keystroke_gateway.stop()
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from src.matclaw.gateways.keystroke_manager import KeystrokeManager
+from src.matclaw.gateways.voice_client import VoiceClient
+
+if TYPE_CHECKING:
+    from src.matclaw.config.base_config import MatClawSettings
+    from src.matclaw.core.rpi_executor import RPIExecutor
+
+
+def start_hybrid_keystroke_gateway(
+    executor: RPIExecutor,
+    voice_client: VoiceClient,
+    *,
+    settings: MatClawSettings | None = None,
+    autostart: bool = True,
+) -> KeystrokeManager:
+    """
+    Construct and optionally start the global ``Ctrl+Alt+M`` hybrid RPI gateway.
+
+    Args:
+        executor: Shared ``RPIExecutor`` (same instance as Telegram/Sentry).
+        voice_client: Object implementing ``VoiceClient`` (e.g. ``BufferedVoiceClient``).
+        settings: Optional ``MatClawSettings`` for NL routing inside ``run_flow``.
+        autostart: If True, call ``start()`` immediately (background pynput thread).
+
+    Returns:
+        The ``KeystrokeManager`` instance; call ``stop()`` on shutdown.
+    """
+    manager = KeystrokeManager(executor, voice_client, settings=settings)
+    if autostart:
+        manager.start()
+    return manager
+
+
+__all__ = ["start_hybrid_keystroke_gateway"]

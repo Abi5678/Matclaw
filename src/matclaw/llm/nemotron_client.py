@@ -44,11 +44,12 @@ PERSONALITY:
 
 TOOLS (Function Calling - map user intent to the right tool):
 - run_matlab: "Plot y=sin(x)", "Compute roots", "Run code" -> write and execute MATLAB.
+- analyze_file: "check test.m", "fix controller.m and run it", "analyze my_script.m", "can you access test.m" -> read, analyze, fix, and/or run a .m file. Use this whenever user mentions a .m filename. Do NOT use run_matlab for .m file operations.
 - workspace_auditor: "Is MATLAB running?", "Check workspace", "Audit variables" -> scan workspace/license.
 - query_memory: "What happened last time?", "Previous gains?", "Past results" -> search memory.
 - pid_optimizer, report_generator: Run MatClaw skills when user asks for PID tuning or reports.
 - simulink_runner: "Simulate [model]", "Run flight_control for 20 seconds", ".slx file" -> use this skill instead of run_matlab. Load-Compile-Run pattern; checks license and model existence first.
-- query_memory: Use ONLY when user explicitly asks about history, previous runs, or past parameters. Do NOT use for plot requests.
+- query_memory: Use ONLY when user explicitly asks about history, previous runs, or past parameters. Do NOT use for plot requests or .m file operations.
 
 For plot, graph, boxplot, figure, chart, visualize, draw: ALWAYS use run_matlab.
 For Simulink model runs (simulate model, run model, run X.slx): use simulink_runner with model_name and stop_time. For other Simulink tasks (open_system, edit blocks): use run_matlab.
@@ -306,6 +307,15 @@ class NemotronClient:
             return OrchestratorAction(
                 tool="run_matlab",
                 arguments={"code": args.get("code") or user_input},
+                thoughts=thoughts,
+            )
+        if tool_name == "analyze_file":
+            return OrchestratorAction(
+                tool="analyze_file",
+                arguments={
+                    "file_path": args.get("file_path") or "",
+                    "action": args.get("action") or "fix_and_run",
+                },
                 thoughts=thoughts,
             )
         if tool_name == "query_memory":

@@ -30,6 +30,7 @@ from src.matclaw.ui.components import (
     render_connection_status,
     render_skills_sidebar,
     render_engineering_callout,
+    render_hybrid_rpi_panel,
     render_interactive_tuner,
     render_vision_gallery,
     render_visualization_panel,
@@ -191,9 +192,69 @@ def _inject_theme() -> None:
         )
 
 
+def _render_public_landing() -> None:
+    """Render a public-style landing screen inside Streamlit."""
+    st.markdown(
+        """
+<section class="matclaw-hero">
+  <span class="matclaw-pill">NEW · Landing + Control Plane</span>
+  <h1>THE AI THAT ACTUALLY DOES THINGS.</h1>
+  <p class="sub">
+    MatClaw runs persistent Research → Plan → Implement loops for engineering workflows.
+    Start from this public home, then enter the app to run hybrid prompts, MATLAB actions,
+    memory queries, and audited execution.
+  </p>
+</section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    c1, c2 = st.columns([1.2, 1])
+    with c1:
+        if st.button("Open MatClaw App", type="primary", use_container_width=True):
+            st.session_state.ui_view = "app"
+            st.rerun()
+    with c2:
+        st.link_button("View GitHub", "https://github.com/Abi5678/Matclaw", use_container_width=True)
+
+    st.caption(
+        "End users: click Open MatClaw App to access the real control plane. "
+        "This landing screen is the public entry point."
+    )
+
+
+def _render_control_plane_hero(session_state: MATLABSessionState) -> None:
+    """Render app header with same visual language as landing card."""
+    st.markdown(
+        f"""
+<section class="matclaw-hero">
+  <span class="matclaw-pill">CONTROL PLANE · LIVE</span>
+  <h1>MatClaw · Hybrid RPI Lab</h1>
+  <p class="sub">
+    Research → Plan → Implement with a hybrid context: voice/intent + code snippet.
+    This runs the same <code>run_flow</code> pathway as the Ctrl+Alt+M gateway.
+  </p>
+  <div class="matclaw-chip-row">
+    <div class="matclaw-chip"><div class="label">MATLAB</div><div class="value">{session_state.status_label}</div></div>
+    <div class="matclaw-chip"><div class="label">Shared Sessions</div><div class="value">{len(session_state.shared_sessions)}</div></div>
+    <div class="matclaw-chip"><div class="label">Mode</div><div class="value">Hybrid RPI</div></div>
+  </div>
+</section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
-    st.set_page_config(page_title="MatClaw Control Plane", page_icon="🧪", layout="wide")
+    st.set_page_config(page_title="MatClaw · Hybrid RPI Lab", page_icon="🧪", layout="wide")
     _inject_theme()
+
+    if "ui_view" not in st.session_state:
+        st.session_state.ui_view = "landing"
+
+    if st.session_state.ui_view == "landing":
+        _render_public_landing()
+        return
 
     settings = MatClawSettings()
     session_manager = MATLABSessionManager(settings)
@@ -233,11 +294,13 @@ def main() -> None:
 
     render_skills_sidebar()
 
-    st.title("MatClaw Control Plane")
-    st.write(
-        "Monitor shared MATLAB availability before connecting higher-level agent workflows "
-        "such as the daemon, MCP layer, or Streamlit dashboards."
-    )
+    top_left, top_right = st.columns([5, 1.2])
+    with top_right:
+        if st.button("Back to Home", type="primary", use_container_width=True):
+            st.session_state.ui_view = "landing"
+            st.rerun()
+
+    _render_control_plane_hero(session_state)
 
     # Bento Box 3-column layout
     col_left, col_center, col_right = st.columns([1, 2, 1])
@@ -251,9 +314,18 @@ def main() -> None:
         # VisualizationPanel: persistent Latest Plot (st.empty) + Full Screen toggle
         render_visualization_panel()
 
-        tab1, tab2, tab3, tab4 = st.tabs(
-            ["Session Manager", "Research History", "Interactive Tuner", "Conversational Lab"]
+        tab0, tab1, tab2, tab3, tab4 = st.tabs(
+            [
+                "Hybrid RPI",
+                "Session Manager",
+                "Research History",
+                "Interactive Tuner",
+                "Conversational Lab",
+            ]
         )
+
+        with tab0:
+            render_hybrid_rpi_panel(settings)
 
         with tab1:
             left, right = st.columns([1.2, 1])
@@ -369,81 +441,112 @@ def _render_conversational_lab_tab(settings: MatClawSettings) -> None:
                 simulink_run_keywords = ("simulate", "run model", "run .slx", ".slx")
                 simulink_keywords = ("simulink", "sim(", "open_system", "load_system", "simulate", "run model")
                 memory_keywords = ("history", "last", "previous", "before", "remember", "past")
+                force_analyze_file = (
+                    ".m" in p
+                    and any(k in p for k in ("check", "fix", "run", "analyze", "access", "debug", "open", "read", "look"))
+                    and not any(k in p for k in memory_keywords)
+                )
+                # Detect "create <name>.m <code>" pattern
+                force_create_file = (
+                    ".m" in p
+                    and any(k in p for k in ("create", "write", "make", "save"))
+                    and not force_analyze_file
+                )
                 force_simulink_runner = (
                     any(k in p for k in simulink_run_keywords)
                     and not any(k in p for k in memory_keywords)
+                    and not force_analyze_file
                 )
                 force_run_matlab = (
                     (any(k in p for k in plot_keywords) or any(k in p for k in simulink_keywords))
                     and not force_simulink_runner
+                    and not force_analyze_file
                     and not any(k in p for k in memory_keywords)
                 )
-                with st.spinner("Thinking..."):
-                    bridge, mm, conversation_history = _get_bridge_memory_and_history(settings)
-                    client = NemotronClient(matlab_bridge=bridge, memory_manager=mm)
-                    context = _get_chat_context(settings)
-                    force_tool = None
-                    if force_simulink_runner:
-                        force_tool = "simulink_runner"
-                    elif force_run_matlab:
-                        force_tool = "run_matlab"
-                    action = client.generate_action(
-                        prompt,
-                        context,
-                        force_tool=force_tool,
-                        conversation_history=conversation_history,
-                    )
-                    if bridge is not None and hasattr(bridge, "stop"):
-                        try:
-                            bridge.stop()
-                        except Exception:
-                            pass
-
-                if action.tool == "respond":
-                    # Nemotron returned text without a tool call (e.g. smart greeting with lab context)
-                    content = action.arguments.get("content", "") or action.arguments.get("message", "")
-                    st.markdown(content)
-                    st.session_state.messages.append({"role": "assistant", "content": content, "tool": None})
-                elif action.tool == "run_matlab":
-                    code = action.arguments.get("code", "")
-                    t = action.thoughts
-                    st.session_state.nemotron_thoughts = {
-                        "research": getattr(t, "research", "") if t else "",
-                        "plan": getattr(t, "plan", "") or code,
-                        "execute": getattr(t, "execute", "") if t else "(pending)",
-                    }
-                    st.session_state._conversational_pending = {
-                        "phase": "research",
-                        "tool": "run_matlab",
-                        "code": code,
-                        "user_input": prompt,
-                    }
-                    st.markdown("Executing MATLAB code...")
-                    _render_matlab_code_with_copy(code)
-                    _run_matlab_with_agent_activity(settings)
-                elif action.tool == "trigger_skill":
-                    skill_name = action.arguments.get("skill_name", "workspace_auditor")
-                    skill_kwargs = {k: v for k, v in action.arguments.items() if k != "skill_name"}
-                    _run_trigger_skill_with_agent_activity(settings, skill_name, prompt, skill_kwargs=skill_kwargs)
-                    result = _get_last_tool_result()
-                    st.markdown(result or "Done.")
-                    st.session_state.messages.append({"role": "assistant", "content": result or "Done.", "tool": action.tool})
-                    st.caption(f"Tool: {action.tool}")
-                elif action.tool == "query_memory":
-                    result = _run_query_memory(settings, action.arguments.get("query", prompt))
+                # --- Handle "create <file>.m <code>" directly (no LLM needed) ---
+                if force_create_file:
+                    result = _handle_create_file(settings, prompt)
                     st.markdown(result)
-                    st.session_state.messages.append({"role": "assistant", "content": result, "tool": "query_memory"})
-                    st.caption("Tool: query_memory")
-                else:
-                    # Fallback: respond with content or query memory
-                    content = action.arguments.get("content", "") or action.arguments.get("message", "")
-                    if content:
+                    st.session_state.messages.append({"role": "assistant", "content": result, "tool": "create_file"})
+                    st.caption("Tool: create_file")
+                    # Skip the rest of the handler
+                elif True:
+                    with st.spinner("Thinking..."):
+                        bridge, mm, conversation_history = _get_bridge_memory_and_history(settings)
+                        client = NemotronClient(matlab_bridge=bridge, memory_manager=mm)
+                        context = _get_chat_context(settings)
+                        force_tool = None
+                        if force_analyze_file:
+                            force_tool = "analyze_file"
+                        elif force_simulink_runner:
+                            force_tool = "simulink_runner"
+                        elif force_run_matlab:
+                            force_tool = "run_matlab"
+                        action = client.generate_action(
+                            prompt,
+                            context,
+                            force_tool=force_tool,
+                            conversation_history=conversation_history,
+                        )
+                        if bridge is not None and hasattr(bridge, "stop"):
+                            try:
+                                bridge.stop()
+                            except Exception:
+                                pass
+
+                    if action.tool == "respond":
+                        # Nemotron returned text without a tool call (e.g. smart greeting with lab context)
+                        content = action.arguments.get("content", "") or action.arguments.get("message", "")
                         st.markdown(content)
                         st.session_state.messages.append({"role": "assistant", "content": content, "tool": None})
-                    else:
-                        result = _run_query_memory(settings, prompt)
+                    elif action.tool == "analyze_file":
+                        file_path = action.arguments.get("file_path", "")
+                        file_action = action.arguments.get("action", "fix_and_run")
+                        st.markdown(f"🔍 Analyzing `{file_path}` (action: {file_action})...")
+                        result = _run_analyze_file(settings, file_path, file_action)
+                        st.markdown(result)
+                        st.session_state.messages.append({"role": "assistant", "content": result, "tool": "analyze_file"})
+                        st.caption("Tool: analyze_file")
+                    elif action.tool == "run_matlab":
+                        code = action.arguments.get("code", "")
+                        t = action.thoughts
+                        st.session_state.nemotron_thoughts = {
+                            "research": getattr(t, "research", "") if t else "",
+                            "plan": getattr(t, "plan", "") or code,
+                            "execute": getattr(t, "execute", "") if t else "(pending)",
+                        }
+                        st.session_state._conversational_pending = {
+                            "phase": "research",
+                            "tool": "run_matlab",
+                            "code": code,
+                            "user_input": prompt,
+                        }
+                        st.markdown("Executing MATLAB code...")
+                        _render_matlab_code_with_copy(code)
+                        _run_matlab_with_agent_activity(settings)
+                    elif action.tool == "trigger_skill":
+                        skill_name = action.arguments.get("skill_name", "workspace_auditor")
+                        skill_kwargs = {k: v for k, v in action.arguments.items() if k != "skill_name"}
+                        _run_trigger_skill_with_agent_activity(settings, skill_name, prompt, skill_kwargs=skill_kwargs)
+                        result = _get_last_tool_result()
+                        st.markdown(result or "Done.")
+                        st.session_state.messages.append({"role": "assistant", "content": result or "Done.", "tool": action.tool})
+                        st.caption(f"Tool: {action.tool}")
+                    elif action.tool == "query_memory":
+                        result = _run_query_memory(settings, action.arguments.get("query", prompt))
                         st.markdown(result)
                         st.session_state.messages.append({"role": "assistant", "content": result, "tool": "query_memory"})
+                        st.caption("Tool: query_memory")
+                    else:
+                        # Fallback: respond with content or query memory
+                        content = action.arguments.get("content", "") or action.arguments.get("message", "")
+                        if content:
+                            st.markdown(content)
+                            st.session_state.messages.append({"role": "assistant", "content": content, "tool": None})
+                        else:
+                            result = _run_query_memory(settings, prompt)
+                            st.markdown(result)
+                            st.session_state.messages.append({"role": "assistant", "content": result, "tool": "query_memory"})
             except Exception as exc:
                 st.error(str(exc))
                 st.session_state.messages.append({"role": "assistant", "content": f"Error: {exc}", "tool": None})
@@ -491,7 +594,16 @@ def _get_bridge_memory_and_history(settings: MatClawSettings) -> tuple[object, o
     bridge = None
     try:
         from src.matclaw.matlab.matlab_bridge import MatlabBridge
-        bridge = MatlabBridge(settings=settings.matlab)
+        import matlab.engine as _me
+        _sessions = _me.find_matlab()
+        _session_name = settings.matlab.session_name
+        if _session_name and _session_name in _sessions:
+            bridge = MatlabBridge(settings=settings.matlab)
+        elif _sessions:
+            from src.matclaw.config.base_config import MatlabSettings
+            bridge = MatlabBridge(settings=MatlabSettings(session_name=_sessions[0], enabled=True))
+        else:
+            bridge = MatlabBridge(settings=settings.matlab)
         bridge.start()
         if not bridge.is_healthy():
             bridge = None
@@ -561,7 +673,16 @@ def _run_matlab_with_agent_activity(settings: MatClawSettings) -> None:
         try:
             from src.matclaw.matlab.matlab_bridge import MatlabBridge
             from src.matclaw.llm.nemotron_client import NemotronClient
-            bridge = MatlabBridge(settings=settings.matlab)
+            import matlab.engine as _me
+            _sessions = _me.find_matlab()
+            _sn = settings.matlab.session_name
+            if _sn and _sn in _sessions:
+                bridge = MatlabBridge(settings=settings.matlab)
+            elif _sessions:
+                from src.matclaw.config.base_config import MatlabSettings
+                bridge = MatlabBridge(settings=MatlabSettings(session_name=_sessions[0], enabled=True))
+            else:
+                bridge = MatlabBridge(settings=settings.matlab)
             bridge.start()
             if bridge.is_healthy():
                 success, out = bridge.run_matlab_code(code)
@@ -598,6 +719,102 @@ def _run_matlab_with_agent_activity(settings: MatClawSettings) -> None:
         del st.session_state._conversational_pending
 
 
+def _format_skill_result_conversational(skill_name: str, result: Any, data: dict) -> str:
+    """Convert raw skill result data into a friendly, conversational summary."""
+    lines: list[str] = []
+
+    if skill_name == "pid_optimizer":
+        metrics = data.get("metrics") or {}
+        gains   = data.get("gains") or {}
+        rt   = metrics.get("rise_time") or data.get("rise_time") or data.get("rise_time_s")
+        over = metrics.get("overshoot_pct") or data.get("overshoot") or data.get("overshoot_pct")
+        iters = data.get("iterations", 1)
+        stable = data.get("stable", metrics.get("stable", True))
+        kp = gains.get("Kp") or gains.get("kp") or data.get("Kp") or data.get("kp")
+        ki = gains.get("Ki") or gains.get("ki") or data.get("Ki") or data.get("ki")
+        kd = gains.get("Kd") or gains.get("kd") or data.get("Kd") or data.get("kd")
+
+        if stable:
+            lines.append("✅ **PID tuning succeeded!** The controller is stable.")
+        else:
+            lines.append("⚠️ **PID tuning did not converge** to a stable solution.")
+
+        if rt is not None:
+            rt_f = float(rt)
+            quality = "fast" if rt_f < 0.5 else "moderate" if rt_f < 2.0 else "slow"
+            lines.append(f"⏱️ **Rise time:** `{rt_f:.3f} s` — the system reaches its target in {rt_f:.2f} seconds ({quality} response).")
+
+        if over is not None:
+            ov_f = float(over)
+            if ov_f < 2:
+                interp = "nearly perfect — very well damped"
+            elif ov_f < 5:
+                interp = "excellent — barely overshoots"
+            elif ov_f < 10:
+                interp = "acceptable — mild overshoot"
+            elif ov_f < 20:
+                interp = "moderate — consider increasing Kd"
+            else:
+                interp = "high — system is oscillating, reduce Kp or increase Kd"
+            lines.append(f"📈 **Overshoot:** `{ov_f:.2f}%` — {interp}.")
+
+        if iters:
+            lines.append(f"🔁 **Converged in {iters} iteration{'s' if int(iters) != 1 else ''}** of the RPI tuning loop.")
+
+        if kp is not None:
+            lines.append(f"🎛️ **Final gains:** Kp=`{float(kp):.4f}`, Ki=`{float(ki or 0):.4f}`, Kd=`{float(kd or 0):.4f}`")
+
+    elif skill_name == "workspace_auditor":
+        n_vars = len(data.get("variables") or [])
+        total_mb = (data.get("total_bytes") or 0) / 1e6
+        warnings = data.get("warnings") or []
+        lic = data.get("license_inuse") or ""
+
+        lines.append(f"🔬 **Workspace audit complete.** Found **{n_vars} variable{'s' if n_vars != 1 else ''}** using **{total_mb:.1f} MB** of memory.")
+
+        for v in (data.get("variables") or [])[:10]:
+            name = v.get("name", "?")
+            mb   = (v.get("bytes") or 0) / 1e6
+            cls  = v.get("class", "?")
+            size_str = f"{mb:.1f} MB" if mb >= 0.1 else f"{int(v.get('bytes', 0))} B"
+            lines.append(f"  • **{name}** — {size_str} ({cls})")
+        if n_vars > 10:
+            lines.append(f"  • *…and {n_vars - 10} more*")
+
+        for w in warnings:
+            if "Research failed" not in w:
+                lines.append(f"⚠️ {w}")
+
+        if total_mb > 500:
+            lines.append(f"\n💡 **Tip:** Your workspace is using {total_mb:.0f} MB. "
+                         "Consider clearing large arrays with `clear wave_sin` to free memory.")
+        if lic:
+            lines.append(f"🔑 **License:** {lic}")
+
+    elif skill_name == "report_generator":
+        path = data.get("report_path", "")
+        fname = Path(path).name if path else "report.md"
+        n_sections = len(data.get("sections") or [])
+        lines.append(f"📄 **Report generated:** `{fname}`")
+        lines.append(f"Contains {n_sections} section{'s' if n_sections != 1 else ''} with experiment history and lessons learned.")
+        if data.get("sent"):
+            lines.append("📤 Sent via Telegram.")
+        else:
+            lines.append(f"📁 Saved to: `{path}`")
+
+    else:
+        # Generic fallback: clean up the raw message
+        msg = getattr(result, "message", "") or data.get("summary", "") or ""
+        if msg:
+            lines.append(msg)
+        for w in (data.get("warnings") or []):
+            lines.append(f"⚠️ {w}")
+        if not lines:
+            lines.append("✅ Skill completed successfully.")
+
+    return "\n".join(lines)
+
+
 def _run_trigger_skill_with_agent_activity(
     settings: MatClawSettings,
     skill_name: str,
@@ -608,7 +825,19 @@ def _run_trigger_skill_with_agent_activity(
     from src.matclaw.matlab.matlab_bridge import MatlabBridge
     from src.matclaw.core.rpi_executor import RPIExecutor
 
-    bridge = MatlabBridge(settings=settings.matlab)
+    try:
+        import matlab.engine as _me
+        _sessions = _me.find_matlab()
+        _sn = settings.matlab.session_name
+        if _sn and _sn in _sessions:
+            bridge = MatlabBridge(settings=settings.matlab)
+        elif _sessions:
+            from src.matclaw.config.base_config import MatlabSettings
+            bridge = MatlabBridge(settings=MatlabSettings(session_name=_sessions[0], enabled=True))
+        else:
+            bridge = MatlabBridge(settings=settings.matlab)
+    except Exception:
+        bridge = MatlabBridge(settings=settings.matlab)
     bridge.start()
     mm = MemoryManager(persist_directory=".matclaw_chromadb")
     try:
@@ -648,29 +877,176 @@ def _run_trigger_skill_with_agent_activity(
     st.session_state.agent_status = "execute"
     result = rpi.execute(plan_data, skill_name, skill_kwargs=skill_kwargs)
     data = getattr(result, "data", None) or {}
-    msg = getattr(result, "message", "") or data.get("summary", "") or ""
-    # Build rich display from data when message/summary is empty (e.g. workspace_auditor on error)
-    if not msg and data:
-        parts = []
-        if data.get("summary"):
-            parts.append(data["summary"])
-        for w in data.get("warnings") or []:
-            parts.append(f"⚠️ {w}")
-        for v in (data.get("variables") or [])[:15]:
-            name = v.get("name", "?")
-            mb = (v.get("bytes") or 0) / 1e6
-            cls = v.get("class", "?")
-            parts.append(f"  • {name}: {mb:.2f} MB ({cls})")
-        if (data.get("variables") or []):
-            n = len(data["variables"])
-            if n > 15:
-                parts.append(f"  ... and {n - 15} more")
-        msg = "\n".join(parts) if parts else str(data)[:500]
-    if not msg:
-        msg = getattr(result, "error", "Skill completed.") or "Skill completed."
+
+    if getattr(result, "success", False):
+        msg = _format_skill_result_conversational(skill_name, result, data)
+    else:
+        err = getattr(result, "error", "") or "Skill failed."
+        msg = f"❌ **{skill_name} failed:** {err}"
+
     st.session_state.agent_execute_code = data.get("code") or st.session_state.get("agent_execute_code", "")
     st.session_state._last_tool_result = msg
     st.session_state.agent_status = "complete"
+
+
+def _handle_create_file(settings: MatClawSettings, prompt: str) -> str:
+    """Create a .m file from user prompt and optionally run it."""
+    import re
+
+    # Extract filename: look for word.m pattern
+    m = re.search(r'(\w+\.m)\b', prompt)
+    if not m:
+        return "❌ Could not determine filename. Use format: `create testing.m <code>`"
+
+    filename = m.group(1)
+
+    # Extract code: everything after the filename
+    code_start = prompt.find(filename) + len(filename)
+    code = prompt[code_start:].strip()
+
+    if not code:
+        return f"❌ No MATLAB code provided for `{filename}`. Paste the code after the filename."
+
+    # Write the file to matlab/ directory
+    matlab_dir = Path("matlab")
+    matlab_dir.mkdir(exist_ok=True)
+    file_path = matlab_dir / filename
+
+    try:
+        file_path.write_text(code, encoding="utf-8")
+    except Exception as exc:
+        return f"❌ Failed to write `{filename}`: {exc}"
+
+    parts = [f"✅ Created `{file_path}`"]
+    parts.append(f"```matlab\n{code[:2000]}\n```")
+
+    # Try to run it
+    try:
+        from src.matclaw.matlab.matlab_bridge import MatlabBridge
+        bridge = MatlabBridge(settings=settings.matlab)
+        bridge.start()
+        if bridge.is_healthy():
+            bridge.addpath(str(matlab_dir.resolve()))
+            success, output = bridge.run_matlab_code(f"run('{file_path.stem}')")
+            if success:
+                parts.append(f"▶️ **Output:**\n```\n{output[:1000]}\n```")
+            else:
+                parts.append(f"❌ **Runtime error:**\n```\n{output[:500]}\n```")
+            bridge.stop()
+        else:
+            parts.append("⚠️ MATLAB bridge not available — file created but not run.")
+    except Exception as exc:
+        parts.append(f"⚠️ Could not run: {exc}")
+
+    return "\n\n".join(parts)
+
+
+def _run_analyze_file(settings: MatClawSettings, file_path: str, action: str = "fix_and_run") -> str:
+    """Run the file analysis pipeline: read, analyze, fix, and/or run a .m file."""
+    try:
+        from src.matclaw.debug.debug_agent import DebugAgent
+        from src.matclaw.matlab.matlab_bridge import MatlabBridge
+        from src.matclaw.security.file_access import guard_file_access
+
+        # Validate access
+        decision = guard_file_access(file_path)
+        if not decision.allow:
+            return f"❌ Access denied: {decision.reason}"
+
+        resolved = decision.resolved_path
+
+        # Read file contents for display
+        try:
+            source_code = resolved.read_text(errors="replace")
+        except Exception as exc:
+            return f"❌ Cannot read file: {exc}"
+
+        # Start MATLAB bridge — connect to shared session
+        bridge = None
+        try:
+            import matlab.engine as _me
+            _sessions = _me.find_matlab()
+            _session_name = settings.matlab.session_name
+            # If configured session is available, use it; else try first available
+            if _session_name and _session_name in _sessions:
+                bridge = MatlabBridge(settings=settings.matlab)
+            elif _sessions:
+                from src.matclaw.config.base_config import MatlabSettings
+                bridge = MatlabBridge(settings=MatlabSettings(session_name=_sessions[0], enabled=True))
+            else:
+                bridge = MatlabBridge(settings=settings.matlab)
+            bridge.start()
+        except Exception as exc:
+            return f"❌ MATLAB bridge failed to start: {exc}\n\n📄 **File:** `{resolved.name}`\n```matlab\n{source_code[:2000]}\n```"
+
+        if not bridge.is_healthy():
+            # Try to find and connect to any available shared session
+            try:
+                import matlab.engine as me
+                sessions = me.find_matlab()
+                if sessions:
+                    from src.matclaw.config.base_config import MatlabSettings
+                    retry_settings = MatlabSettings(session_name=sessions[0], enabled=True)
+                    bridge = MatlabBridge(settings=retry_settings)
+                    bridge.start()
+            except Exception:
+                pass
+
+        if not bridge.is_healthy():
+            parts = [f"📄 **File:** `{resolved.name}`"]
+            parts.append(f"```matlab\n{source_code[:2000]}\n```")
+            parts.append("❌ MATLAB bridge is not available. Make sure MATLAB is running with a shared engine:")
+            parts.append("```matlab\nmatlab.engine.shareEngine('MatClawShared')\n```")
+            return "\n\n".join(parts)
+
+        mm = None
+        try:
+            mm = MemoryManager(persist_directory=".matclaw_chromadb")
+            mm._ensure_client()
+        except Exception:
+            pass
+
+        kb = None
+        try:
+            from src.matclaw.memory.knowledge_base import KnowledgeBase
+            if mm is not None:
+                kb = KnowledgeBase(mm)
+        except Exception:
+            pass
+
+        debug_agent = DebugAgent(
+            bridge,
+            matlab_root=resolved.parent,
+            memory_manager=mm,
+            knowledge_base=kb,
+        )
+        result = debug_agent.analyze_and_fix_file(resolved, action=action)
+
+        # Release bridge (don't quit shared session)
+        try:
+            bridge.stop()
+        except Exception:
+            pass
+
+        # Format result
+        parts = [f"📄 **File:** `{resolved.name}`"]
+        parts.append(f"```matlab\n{source_code[:2000]}\n```")
+
+        if result.fixed:
+            parts.append("✅ **Result:** Fixed and ran successfully!")
+        elif result.fix_error:
+            parts.append(f"❌ **Error:** {result.fix_error}")
+
+        if result.suggested_changes:
+            parts.append(f"💡 **Analysis:** {result.suggested_changes}")
+
+        if result.applied_to_source:
+            parts.append(f"📝 Applied fix to source (backup at `{resolved.name}.bak`)")
+
+        return "\n\n".join(parts)
+
+    except Exception as exc:
+        return f"❌ File analysis failed: {exc}"
 
 
 def _run_query_memory(settings: MatClawSettings, query: str) -> str:

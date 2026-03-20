@@ -8,16 +8,26 @@ write temp .m → addpath → test → if success and config: apply to source wi
 from __future__ import annotations
 
 import logging
+import json
 import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
 from src.matclaw.config.base_config import DebugAgentSettings
+from src.matclaw.debug.prompts import (
+    ANALYZE_SYSTEM_PROMPT,
+    DEBUG_SYSTEM_PROMPT,
+    build_analyze_user_prompt,
+    build_debug_user_prompt,
+)
+from src.matclaw.lab_journal import append_lab_journal
+from src.matclaw.llm.llm_client import call_chat_completion, resolve_api_key
 from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest, MatlabCallResult
+from src.matclaw.memory.memory_manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +74,19 @@ class DebugAgent:
         matlab_bridge: MatlabBridge,
         settings: Optional[DebugAgentSettings] = None,
         matlab_root: Optional[Path] = None,
+        memory_manager: MemoryManager | None = None,
+        journal_path: Path | None = None,
+        knowledge_base: "Any | None" = None,
     ) -> None:
         self.matlab_bridge = matlab_bridge
         self.settings = settings or DebugAgentSettings()
         self.matlab_root = matlab_root or Path(self.settings.matlab_root).resolve()
+        self.memory_manager = memory_manager
+        self.journal_path = journal_path
+        self.knowledge_base = knowledge_base  # KnowledgeBase instance (optional)
+
+    def set_memory_manager(self, memory_manager: MemoryManager | None) -> None:
+        self.memory_manager = memory_manager
 
     def handle_failure(
         self,
@@ -80,6 +99,10 @@ class DebugAgent:
             "MATLAB command failed; entering autonomous debug loop.",
             extra={"function": request.function, "error": error_msg},
         )
+        self._journal(
+            f"Debug start: function={request.function} error={error_msg[:200]}",
+            source="DebugAgent",
+        )
 
         candidate_paths = self._find_similar_functions(request.function)
         temp_file: Optional[Path] = None
@@ -89,7 +112,11 @@ class DebugAgent:
         applied_to_source = False
         suggested_changes: Optional[str] = None
 
-        for attempt in range(self.settings.max_fix_attempts):
+        llm_rounds = max(1, int(self.settings.debug_max_rounds))
+        previous_attempt_error: str | None = None
+        previous_fix_explanation: str | None = None
+
+        for attempt in range(max(self.settings.max_fix_attempts, llm_rounds)):
             if not candidate_paths:
                 logger.info("No similar functions discovered; skipping fix attempt.")
                 break
@@ -103,7 +130,19 @@ class DebugAgent:
 
                 source_code = source.read_text(errors="replace")
                 parsed = self._parse_error(error_msg)
-                patched_code = self._suggest_fix(source_code, error_msg, parsed)
+                # Fast path: try local heuristics first, then LLM reasoning if needed.
+                if attempt == 0:
+                    patched_code = self._suggest_fix(source_code, error_msg, parsed)
+                else:
+                    patched_code, previous_fix_explanation = self._suggest_fix_with_llm(
+                        source_path=source,
+                        source_code=source_code,
+                        request=request,
+                        error_message=error_msg,
+                        parsed=parsed,
+                        previous_attempt_error=previous_attempt_error,
+                        previous_fix_explanation=previous_fix_explanation,
+                    )
                 temp_dir, temp_file = self._create_temp_candidate(source_path_str, patched_code)
 
                 # Ensure MATLAB sees the temp file first
@@ -113,13 +152,17 @@ class DebugAgent:
                     "Testing speculative fix using temporary MATLAB file.",
                     extra={"temp_file": str(temp_file), "attempt": attempt + 1},
                 )
-                test_request = MatlabCallRequest(
-                    function=request.function,
-                    args=request.args,
-                    kwargs=request.kwargs,
-                    nargout=request.nargout,
-                )
-                test_result = self.matlab_bridge.call(test_request)
+                if not self.settings.debug_sandbox:
+                    test_result = MatlabCallResult(success=True, result=None, error=None)
+                else:
+                    test_request = MatlabCallRequest(
+                        function=request.function,
+                        args=request.args,
+                        kwargs=request.kwargs,
+                        nargout=request.nargout,
+                        timeout_seconds=request.timeout_seconds,
+                    )
+                    test_result = self.matlab_bridge.call(test_request)
 
                 if test_result.success:
                     fixed = True
@@ -127,14 +170,35 @@ class DebugAgent:
                     logger.info("Speculative fix executed successfully during debug loop.")
                     if self.settings.apply_fix_with_bak:
                         applied_to_source = self._apply_fix_to_source(source, source_code, patched_code)
+                    self._store_fix_pattern(
+                        request=request,
+                        source_path=source,
+                        original_error=failure.error or "Unknown MATLAB error.",
+                        parsed=parsed,
+                        explanation=suggested_changes or previous_fix_explanation or "Autonomous fix applied.",
+                    )
+                    self._journal(
+                        f"Debug success: function={request.function} fixed=True applied={applied_to_source}",
+                        source="DebugAgent",
+                        artifact_paths=[str(source)] if applied_to_source else None,
+                    )
                     break
                 else:
                     fix_error = test_result.error or "Unknown error while testing fix."
                     logger.warning("Speculative fix did not resolve the error.", extra={"fix_error": fix_error})
                     error_msg = fix_error  # Retry with new error message
+                    previous_attempt_error = fix_error
+                    self._journal(
+                        f"Debug attempt failed: function={request.function} attempt={attempt + 1} error={fix_error[:200]}",
+                        source="DebugAgent",
+                    )
             except Exception as exc:
                 fix_error = str(exc)
                 logger.exception("Error during autonomous MATLAB debug attempt: %s", exc)
+                self._journal(
+                    f"Debug exception: function={request.function} error={fix_error[:200]}",
+                    source="DebugAgent",
+                )
                 break
 
         return DebugAttemptResult(
@@ -143,6 +207,216 @@ class DebugAgent:
             candidate_functions=candidate_paths,
             fixed=fixed,
             fix_error=fix_error,
+            applied_to_source=applied_to_source,
+            suggested_changes=suggested_changes,
+        )
+
+    # ------------------------------------------------------------------
+    # Proactive file analysis (the core "fix test.m and run it" method)
+    # ------------------------------------------------------------------
+
+    def analyze_and_fix_file(
+        self,
+        file_path: Path | str,
+        *,
+        action: str = "fix_and_run",  # "analyze" | "fix" | "run" | "fix_and_run"
+        max_rounds: int | None = None,
+    ) -> DebugAttemptResult:
+        """
+        Read a .m file, analyse/fix/run it autonomously.
+
+        This is the **proactive** counterpart to :meth:`handle_failure` which
+        only fires reactively when a MATLAB call fails.
+
+        Args:
+            file_path: Path to the ``.m`` file.
+            action: What to do — ``"analyze"``, ``"fix"``, ``"run"``, or ``"fix_and_run"``.
+            max_rounds: Max LLM fix-test-retry rounds (defaults to settings).
+
+        Returns:
+            :class:`DebugAttemptResult` with diagnosis and/or execution output.
+        """
+        from src.matclaw.security.file_access import guard_file_access
+
+        path = Path(file_path)
+        rounds = max_rounds or int(self.settings.debug_max_rounds)
+
+        # --- validate path -------------------------------------------------
+        decision = guard_file_access(str(path))
+        if not decision.allow:
+            return DebugAttemptResult(
+                original_error=f"File access denied: {decision.reason}",
+                fixed=False,
+                fix_error=decision.reason,
+            )
+        path = decision.resolved_path  # type: ignore[assignment]
+
+        # --- read source ----------------------------------------------------
+        try:
+            source_code = path.read_text(errors="replace")
+        except Exception as exc:
+            return DebugAttemptResult(
+                original_error=f"Cannot read file: {exc}",
+                fixed=False,
+                fix_error=str(exc),
+            )
+
+        self._journal(f"Analyze start: file={path.name} action={action}", source="DebugAgent")
+
+        # --- query memory for past fixes ------------------------------------
+        memory_hints: list[str] = []
+        if self.memory_manager is not None:
+            try:
+                results = self.memory_manager.query_context(
+                    f"matlab debug fix {path.stem}",
+                    n_results=3,
+                )
+                for r in results:
+                    meta = r.get("metadata") or {}
+                    hint = meta.get("debug_explanation") or meta.get("summary") or r.get("document")
+                    if hint:
+                        memory_hints.append(str(hint)[:280])
+            except Exception:
+                logger.exception("Memory query failed during file analysis.")
+
+        # --- try running as-is (if action includes run) ---------------------
+        run_error: str | None = None
+        run_output: str | None = None
+        if action in ("run", "fix_and_run"):
+            try:
+                # Ensure MATLAB sees the file's parent directory
+                self.matlab_bridge.addpath(str(path.parent))
+                success, output = self.matlab_bridge.run_matlab_code(f"run('{path.stem}')")
+                if success:
+                    self._journal(
+                        f"Analyze: {path.name} ran successfully (no fix needed).",
+                        source="DebugAgent",
+                    )
+                    return DebugAttemptResult(
+                        original_error="",
+                        fixed=True,
+                        suggested_changes=f"Code ran successfully. Output: {output[:500]}",
+                    )
+                run_error = output
+            except Exception as exc:
+                run_error = str(exc)
+
+        # --- if action is just "run" and it failed, report -----------------
+        if action == "run":
+            return DebugAttemptResult(
+                original_error=run_error or "Unknown runtime error.",
+                fixed=False,
+                fix_error=run_error,
+                suggested_changes=f"Runtime error: {run_error}",
+            )
+
+        # --- LLM-powered analysis / fix ------------------------------------
+        synthetic_request = MatlabCallRequest(function=path.stem, args=[], nargout=0)
+        temp_file: Optional[Path] = None
+        fixed = False
+        fix_error_out: Optional[str] = None
+        applied_to_source = False
+        suggested_changes: Optional[str] = None
+
+        for attempt in range(rounds):
+            try:
+                # Build prompt
+                user_prompt = build_analyze_user_prompt(
+                    file_path=str(path),
+                    source_code=source_code,
+                    action=action,
+                    run_error=run_error,
+                    memory_hints=memory_hints,
+                )
+
+                provider = self.settings.debug_llm_provider
+                model = self.settings.debug_llm_model
+                key = self.settings.debug_llm_api_key or resolve_api_key(provider)
+
+                if not key:
+                    # Fallback to heuristic if no LLM key
+                    parsed = self._parse_error(run_error or "")
+                    patched_code = self._suggest_fix(source_code, run_error or "", parsed)
+                    explanation = "Heuristic fix (no LLM key available)."
+                else:
+                    text = call_chat_completion(
+                        provider=provider,
+                        model=model,
+                        system=ANALYZE_SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": user_prompt}],
+                        api_key=key,
+                        max_tokens=2000,
+                    )
+                    payload = self._parse_json_payload(text)
+                    has_issues = payload.get("has_issues", True)
+
+                    # If analysis only, return the diagnosis
+                    if action == "analyze":
+                        diagnosis = payload.get("diagnosis") or payload.get("explanation") or "No issues found."
+                        return DebugAttemptResult(
+                            original_error=run_error or "",
+                            fixed=not has_issues,
+                            suggested_changes=diagnosis,
+                        )
+
+                    patched_code = payload.get("fixed_code") or source_code
+                    explanation = payload.get("explanation") or "LLM-generated patch."
+
+                    if not has_issues and patched_code == source_code:
+                        return DebugAttemptResult(
+                            original_error=run_error or "",
+                            fixed=True,
+                            suggested_changes="No issues found in the code.",
+                        )
+
+                # Sandbox test
+                temp_dir, temp_file = self._create_temp_candidate(str(path), patched_code)
+                self.matlab_bridge.addpath(str(temp_dir))
+
+                if not self.settings.debug_sandbox:
+                    test_success = True
+                    test_output = ""
+                else:
+                    test_success, test_output = self.matlab_bridge.run_matlab_code(
+                        f"run('{path.stem}')"
+                    )
+
+                if test_success:
+                    fixed = True
+                    suggested_changes = explanation
+                    if self.settings.apply_fix_with_bak and patched_code != source_code:
+                        applied_to_source = self._apply_fix_to_source(path, source_code, patched_code)
+                    self._store_fix_pattern(
+                        request=synthetic_request,
+                        source_path=path,
+                        original_error=run_error or "proactive analysis",
+                        parsed=self._parse_error(run_error or ""),
+                        explanation=explanation,
+                    )
+                    self._journal(
+                        f"Analyze success: file={path.name} fixed=True applied={applied_to_source}",
+                        source="DebugAgent",
+                        artifact_paths=[str(path)] if applied_to_source else None,
+                    )
+                    break
+                else:
+                    fix_error_out = test_output
+                    run_error = test_output  # Feed back for next round
+                    self._journal(
+                        f"Analyze fix attempt {attempt + 1} failed: {test_output[:200]}",
+                        source="DebugAgent",
+                    )
+
+            except Exception as exc:
+                fix_error_out = str(exc)
+                logger.exception("Error during file analysis attempt %d: %s", attempt + 1, exc)
+                break
+
+        return DebugAttemptResult(
+            original_error=run_error or "proactive analysis",
+            attempted_fix_file=str(temp_file) if temp_file else None,
+            fixed=fixed,
+            fix_error=fix_error_out,
             applied_to_source=applied_to_source,
             suggested_changes=suggested_changes,
         )
@@ -159,6 +433,83 @@ class DebugAgent:
                 break
         return out
 
+    def _suggest_fix_with_llm(
+        self,
+        *,
+        source_path: Path,
+        source_code: str,
+        request: MatlabCallRequest,
+        error_message: str,
+        parsed: dict,
+        previous_attempt_error: str | None,
+        previous_fix_explanation: str | None,
+    ) -> tuple[str, str]:
+        provider = self.settings.debug_llm_provider
+        model = self.settings.debug_llm_model
+        key = self.settings.debug_llm_api_key or resolve_api_key(provider)
+        if not key:
+            logger.info("Debug LLM key missing; falling back to heuristic patch.")
+            return self._suggest_fix(source_code, error_message, parsed), "LLM key missing; heuristic fallback."
+
+        memory_hints: list[str] = []
+        if self.memory_manager is not None:
+            try:
+                results = self.memory_manager.query_context(
+                    f"matlab debug fix {request.function} {parsed.get('type', '')} {parsed.get('hint', '')}",
+                    n_results=3,
+                )
+                for r in results:
+                    meta = r.get("metadata") or {}
+                    hint = meta.get("debug_explanation") or meta.get("summary") or r.get("document")
+                    if hint:
+                        memory_hints.append(str(hint)[:280])
+            except Exception:
+                logger.exception("Debug memory query failed.")
+
+        user_prompt = build_debug_user_prompt(
+            error_message=error_message,
+            function_name=request.function,
+            source_path=str(source_path),
+            source_code=source_code,
+            parsed_type=str(parsed.get("type", "unknown")),
+            parsed_hint=parsed.get("hint"),
+            previous_attempt_error=previous_attempt_error,
+            prior_fix_explanation=previous_fix_explanation,
+            memory_hints=memory_hints,
+        )
+        text = call_chat_completion(
+            provider=provider,
+            model=model,
+            system=DEBUG_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+            api_key=key,
+            max_tokens=1800,
+        )
+        payload = self._parse_json_payload(text)
+        fixed_code = payload.get("fixed_code") or source_code
+        explanation = payload.get("explanation") or "LLM-generated patch."
+        return fixed_code, explanation
+
+    def _parse_json_payload(self, text: str) -> dict:
+        clean = text.strip()
+        if "```" in clean:
+            start = clean.find("```")
+            if "json" in clean[start : start + 10].lower():
+                start = clean.find("\n", start) + 1
+            end = clean.find("```", start)
+            if end > start:
+                clean = clean[start:end]
+        i = clean.find("{")
+        j = clean.rfind("}")
+        if i >= 0 and j > i:
+            clean = clean[i : j + 1]
+        try:
+            data = json.loads(clean)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            logger.warning("Debug LLM response parse failed; using heuristic fallback.")
+            return {}
+
     def _suggest_fix(self, source_code: str, error_msg: str, parsed: dict) -> str:
         """
         Propose a patched version of the MATLAB code based on the error.
@@ -169,7 +520,12 @@ class DebugAgent:
 
         # Insert input-argument checks after the first function line
         if err_type == "not_enough_inputs":
-            code = self._insert_nargin_check(code, min_args=1)
+            inferred = self._infer_required_inputs_from_signature(code)
+            arg_names = self._infer_input_names_from_signature(code)
+            if inferred and inferred > 1 and arg_names:
+                code = self._insert_default_arg_guards(code, arg_names)
+            else:
+                code = self._insert_nargin_check(code, min_args=inferred or 1)
         elif err_type == "too_many_inputs":
             code = self._insert_nargin_check(code, max_args=True)
 
@@ -197,6 +553,55 @@ class DebugAgent:
         else:
             return code
         lines.insert(insert_at, check)
+        return "\n".join(lines)
+
+    def _infer_required_inputs_from_signature(self, code: str) -> int | None:
+        """
+        Infer number of required inputs from first MATLAB function signature.
+        Example: `function y = foo(a,b,c)` -> 3
+        """
+        for line in code.split("\n"):
+            m = re.match(r"\s*function\b.*?\((.*?)\)", line)
+            if not m:
+                continue
+            inside = (m.group(1) or "").strip()
+            if not inside:
+                return 0
+            parts = [p.strip() for p in inside.split(",") if p.strip()]
+            return len(parts)
+        return None
+
+    def _infer_input_names_from_signature(self, code: str) -> list[str]:
+        for line in code.split("\n"):
+            m = re.match(r"\s*function\b.*?\((.*?)\)", line)
+            if not m:
+                continue
+            inside = (m.group(1) or "").strip()
+            if not inside:
+                return []
+            return [p.strip() for p in inside.split(",") if p.strip()]
+        return []
+
+    def _insert_default_arg_guards(self, code: str, arg_names: list[str]) -> str:
+        """
+        For missing-input errors, assign safe defaults for optional trailing args.
+        Example:
+            if nargin < 2, b = 0; end
+            if nargin < 3, c = 0; end
+        """
+        lines = code.split("\n")
+        insert_at = -1
+        for i, line in enumerate(lines):
+            if re.match(r"\s*function\b", line):
+                insert_at = i + 1
+                break
+        if insert_at < 0:
+            return code
+        guards: list[str] = []
+        for idx, arg in enumerate(arg_names[1:], start=2):
+            guards.append(f"    if nargin < {idx}, {arg} = 0; end")
+        if guards:
+            lines[insert_at:insert_at] = guards + [""]
         return "\n".join(lines)
 
     def _wrap_in_try_catch(self, code: str) -> str:
@@ -246,6 +651,57 @@ class DebugAgent:
         except Exception:
             logger.exception("Failed to apply fix to source (bak at %s).", bak_path)
             return False
+
+    def _store_fix_pattern(
+        self,
+        *,
+        request: MatlabCallRequest,
+        source_path: Path,
+        original_error: str,
+        parsed: dict,
+        explanation: str,
+    ) -> None:
+        # Store in ChromaDB artifacts (existing behaviour)
+        if self.memory_manager is not None:
+            try:
+                key = f"debug_fix:{source_path.name}:{request.function}:{abs(hash(original_error)) % 1000000}"
+                self.memory_manager.store_artifact(
+                    key,
+                    {
+                        "skill": "debug_agent",
+                        "source_file": str(source_path),
+                        "function": request.function,
+                        "error": original_error,
+                        "error_type": parsed.get("type"),
+                        "error_hint": parsed.get("hint"),
+                        "debug_explanation": explanation,
+                        "summary": explanation,
+                    },
+                    vector=None,
+                )
+            except Exception:
+                logger.exception("Failed to store debug fix pattern in artifacts.")
+
+        # Also store in KnowledgeBase for long-term memory
+        if self.knowledge_base is not None:
+            try:
+                self.knowledge_base.store_debug_fix(
+                    skill_name="debug_agent",
+                    description=f"Fixed {source_path.name}: {explanation}",
+                    source_file=str(source_path),
+                    error_type=parsed.get("type", "unknown"),
+                    explanation=explanation,
+                )
+            except Exception:
+                logger.exception("Failed to store debug fix in knowledge base.")
+
+    def _journal(self, summary: str, source: str = "DebugAgent", artifact_paths: list[str] | None = None) -> None:
+        if self.journal_path is None:
+            return
+        try:
+            append_lab_journal(self.journal_path, summary, source=source, artifact_paths=artifact_paths)
+        except Exception:
+            logger.exception("Failed to append debug journal entry.")
 
     def _find_similar_functions(self, failed_function: str) -> List[str]:
         """Search local MATLAB project files for functions with matching or similar names."""

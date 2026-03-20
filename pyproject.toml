@@ -26,6 +26,9 @@ dependencies = [
     "openai>=1.0.0",
     "uvloop>=0.20.0; platform_system != 'Windows'",
     "structlog>=24.1.0",
+    "pynput>=1.8.1",
+    "pyperclip>=1.11.0",
+    "websockets>=13.1",
 ]
 
 [project.scripts]

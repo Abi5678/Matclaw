@@ -10,4 +10,8 @@ __pycache__/
 .env
 .mypy_cache/
 .matclaw_chromadb/
+*.sqlite3
+data/plots/
+src/matclaw.egg-info/
+src/matclaw/skills/report_generator/reports/
 

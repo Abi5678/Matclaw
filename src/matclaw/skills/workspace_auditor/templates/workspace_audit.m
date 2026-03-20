@@ -3,7 +3,8 @@
 % FIX: Python engine rejects struct arrays and cell arrays - use pipe-delimited strings.
 function out = workspace_audit()
     try
-        w = whos;
+        % Use evalin('base',...) to see the BASE workspace, not this function's scope
+        w = evalin('base', 'whos');
         n = numel(w);
         out.var_count = double(n);
         out.total_bytes = double(sum([w.bytes]));

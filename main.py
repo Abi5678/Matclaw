@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.matclaw.config.base_config import MatClawSettings
 from src.matclaw.config.logging_config import configure_logging
@@ -14,18 +14,29 @@ from src.matclaw.memory.memory import MemoryStore
 from src.matclaw.memory.memory_manager import MemoryManager
 from src.matclaw.debug.debug_agent import DebugAgent
 from src.matclaw.watchdog import WatchdogService
+from src.matclaw.core.job_manager import JobManager
+from src.matclaw.core.experiment import ExperimentTracker
 from src.matclaw.core.rpi_executor import RPIExecutor
 from src.matclaw.sentry import SentryWatchdog
 from src.matclaw.sentry.sync_handler import SyncHandler
-from src.matclaw.gateways import TelegramHandler
+from src.matclaw.gateways import BufferedVoiceClient, KeystrokeManager, TelegramHandler
 from src.matclaw.gateways.nl_router import resolve_skill_from_nl, route_nl_message
 from src.matclaw.lab_journal import append_lab_journal
 from src.matclaw.skills import list_skills, load_skill_logic
+from src.matclaw.skills.vision_analyst import VisionAnalyst
 from src.matclaw.vision import analyze_plot
 from datetime import datetime
 
 
 logger = logging.getLogger(__name__)
+
+SKILL_TIMEOUT_SECONDS: dict[str, float] = {
+    "workspace_auditor": 120.0,
+    "report_generator": 300.0,
+    "simulink_runner": 600.0,
+    "pid_optimizer": 1200.0,
+    "sentry_run": 300.0,
+}
 
 
 class Daemon:
@@ -38,20 +49,25 @@ class Daemon:
         self.settings = settings
         self._shutdown = threading.Event()
         self._heartbeat_thread: Optional[threading.Thread] = None
+        self.memory_store = MemoryStore(settings=self.settings.memory)
+        self.memory_manager = MemoryManager(persist_directory=".matclaw_chromadb")
+        self.experiment_tracker = ExperimentTracker(".matclaw_experiments.sqlite3")
         self.matlab_bridge = MatlabBridge(settings=self.settings.matlab)
         self.debug_agent = DebugAgent(
             matlab_bridge=self.matlab_bridge,
             settings=self.settings.debug,
+            memory_manager=self.memory_manager,
+            journal_path=Path(self.settings.lab_journal.path) if self.settings.lab_journal.enabled else None,
         )
         self.matlab_bridge.set_debug_agent(self.debug_agent)
-        self.memory_store = MemoryStore(settings=self.settings.memory)
-        self.memory_manager = MemoryManager(persist_directory=".matclaw_chromadb")
         token = (self.settings.telegram.bot_token or os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")) if self.settings.telegram.enabled else None
         self.telegram = TelegramHandler(token=token, chat_id=self.settings.telegram.chat_id or os.environ.get("TELEGRAM_CHAT_ID"))
         self._pending_tasks: dict[int, dict[str, Any]] = {}
+        self.job_manager = JobManager(concurrency=1, on_status_change=self._on_job_status_change)
         self.rpi_executor = RPIExecutor(
             matlab_bridge=self.matlab_bridge,
             memory_manager=self.memory_manager,
+            experiment_tracker=self.experiment_tracker,
             on_run_complete=self._on_skill_complete,
             hitl_threshold_seconds=float(self.settings.hitl.threshold_seconds),
             on_pending_hitl=self._on_pending_hitl if self.settings.hitl.enabled else None,
@@ -61,8 +77,26 @@ class Daemon:
             settings=self.settings.sentry,
             lab_settings=self.settings.lab_journal,
             executor=self.rpi_executor,
+            submit_job=self._submit_background_job,
         )
         self.sync_handler = SyncHandler(settings=self.settings.sync)
+        # Shared buffer for voice/ASR → hybrid hotkey gateway (set transcript from your pipeline).
+        self.voice_client = BufferedVoiceClient()
+        self._hybrid_keystroke: KeystrokeManager | None = None
+
+    def _submit_background_job(
+        self,
+        skill_name: str,
+        fn: Callable[[], Any],
+        timeout_seconds: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        return self.job_manager.submit_job(
+            skill_name,
+            fn,
+            timeout_seconds=timeout_seconds if timeout_seconds is not None else SKILL_TIMEOUT_SECONDS.get(skill_name),
+            metadata=metadata,
+        )
 
     def _on_skill_complete(
         self, summary: str, file_path: Path, skill_name: str, artifact_paths: list[str]
@@ -71,26 +105,121 @@ class Daemon:
         image_path = next((p for p in artifact_paths if p.lower().endswith(".png")), None)
         analysis = ""
         if image_path and self.settings.vision.enabled:
-            analysis = analyze_plot(
-                image_path,
-                provider=self.settings.vision.provider,
-                api_key=self.settings.vision.api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"),
-                model=self.settings.vision.model,
-            )
-            if analysis:
-                summary = f"I've analyzed the plot: {analysis}\n\n{summary}"
-                if self.memory_manager:
-                    self.memory_manager.store_artifact(
-                        f"vision:{Path(image_path).name}",
-                        {"vision_summary": analysis, "image_path": image_path, "source_file": str(file_path)},
-                        vector=None,
+            # Phase 5: VisionAnalyst (local NIM multimodal) on artifact PNG.
+            try:
+                analyst = VisionAnalyst(self.matlab_bridge)
+                verdict = analyst.analyze_png_file(image_path)
+                if verdict is not None:
+                    parts = []
+                    if verdict.overshoot is not None:
+                        parts.append(f"overshoot≈{verdict.overshoot}")
+                    if verdict.settling_time is not None:
+                        parts.append(f"settling≈{verdict.settling_time}s")
+                    if verdict.steady_state_error is not None:
+                        parts.append(f"ss_err≈{verdict.steady_state_error}")
+                    parts.append(f"oscillations={verdict.oscillations}")
+                    analysis = "; ".join(parts)
+                    summary = f"I've analyzed the plot: {analysis}\n\n{summary}"
+                    if self.memory_manager:
+                        self.memory_manager.store_artifact(
+                            f"vision_analyst:{Path(image_path).name}",
+                            {
+                                "vision_summary": analysis,
+                                "image_path": image_path,
+                                "source_file": str(file_path),
+                                "oscillations_detected": verdict.oscillations,
+                                "overshoot": verdict.overshoot,
+                                "steady_state_error": verdict.steady_state_error,
+                                "settling_time": verdict.settling_time,
+                                "summary": analysis,
+                                "skill": "vision_analyst",
+                            },
+                            vector=None,
+                        )
+                # Fallback: legacy vision analyzer if NIM unavailable or returned nothing useful.
+                if not analysis:
+                    analysis = analyze_plot(
+                        image_path,
+                        provider=self.settings.vision.provider,
+                        api_key=self.settings.vision.api_key
+                        or os.environ.get("GOOGLE_API_KEY")
+                        or os.environ.get("ANTHROPIC_API_KEY"),
+                        model=self.settings.vision.model,
                     )
+                    if analysis and self.memory_manager:
+                        self.memory_manager.store_artifact(
+                            f"vision_legacy:{Path(image_path).name}",
+                            {"vision_summary": analysis, "image_path": image_path, "source_file": str(file_path), "summary": analysis},
+                            vector=None,
+                        )
+            except Exception:
+                # As a last resort, keep the old behavior (if configured) instead of failing the whole run.
+                analysis = analyze_plot(
+                    image_path,
+                    provider=self.settings.vision.provider,
+                    api_key=self.settings.vision.api_key
+                    or os.environ.get("GOOGLE_API_KEY")
+                    or os.environ.get("ANTHROPIC_API_KEY"),
+                    model=self.settings.vision.model,
+                )
+                if analysis:
+                    summary = f"I've analyzed the plot: {analysis}\n\n{summary}"
+                    if self.memory_manager:
+                        self.memory_manager.store_artifact(
+                            f"vision_fallback:{Path(image_path).name}",
+                            {"vision_summary": analysis, "image_path": image_path, "source_file": str(file_path), "summary": analysis},
+                            vector=None,
+                        )
         if self.settings.telegram.enabled and self.telegram._token:
             self.telegram.send_alert(summary, image_path=image_path)
 
     def _on_pending_hitl(self, chat_id: int, plan_data: dict, skill_name: str, skill_kwargs: dict, message_text: str) -> None:
         self._pending_tasks[chat_id] = {"plan_data": plan_data, "skill_name": skill_name, "skill_kwargs": skill_kwargs}
         self.telegram.send_alert_with_buttons(message_text, chat_id=chat_id)
+
+    def _queue_skill_run(
+        self,
+        skill_name: str,
+        *,
+        context: str | None = None,
+        chat_id: int | None = None,
+        timeout_seconds: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        effective_timeout = timeout_seconds if timeout_seconds is not None else SKILL_TIMEOUT_SECONDS.get(skill_name)
+
+        def _job() -> Any:
+            return self.rpi_executor.run_rpi(skill_name, context=context, chat_id=chat_id)
+
+        return self.job_manager.submit_job(
+            skill_name=skill_name,
+            job_callable=_job,
+            timeout_seconds=effective_timeout,
+            metadata=metadata or {},
+        )
+
+    def _on_job_status_change(self, snapshot: dict[str, Any]) -> None:
+        """Emit lightweight job progress updates; Telegram only when chat_id is known."""
+        status = str(snapshot.get("status") or "")
+        if status not in {"running", "done", "failed", "timeout", "cancelled"}:
+            return
+        meta = snapshot.get("metadata") or {}
+        chat_id = meta.get("chat_id")
+        if not (self.settings.telegram.enabled and self.telegram._token and chat_id):
+            return
+        job_id = snapshot.get("job_id")
+        skill = snapshot.get("skill_name")
+        if status == "running":
+            msg = f"Job `{job_id}` started: {skill}"
+        elif status == "done":
+            msg = f"Job `{job_id}` completed: {skill}"
+        else:
+            err = snapshot.get("error") or status
+            msg = f"Job `{job_id}` {status}: {err}"
+        try:
+            self.telegram.send_alert(msg, chat_id=chat_id)
+        except Exception:
+            logger.exception("Failed to send Telegram job status alert.")
 
     def _hitl_response(self, chat_id: int, approved: bool) -> None:
         task = self._pending_tasks.pop(chat_id, None)
@@ -106,7 +235,7 @@ class Daemon:
             self.telegram.send_alert("Cancelled.", chat_id=chat_id)
 
     def _telegram_command(self, command: str, args: list[str], chat_id: int) -> str:
-        """Handle /status, /audit, /report, /run, and yes/no for HITL."""
+        """Handle /status, /audit, /report, /run, /jobs, /job, /cancel, /experiments, /compare."""
         cmd = command.lower().strip()
         if cmd in ("yes", "no"):
             if chat_id in self._pending_tasks:
@@ -117,17 +246,116 @@ class Daemon:
             if not args:
                 return "Usage: /run <skill_name> e.g. /run pid_optimizer"
             skill_name = args[0]
-            result = self.rpi_executor.run_rpi(skill_name, chat_id=chat_id)
-            if isinstance(result, dict) and result.get("pending"):
-                return "Approval requested. Reply Yes or No (or use the buttons)."
-            return str(getattr(result, "message", result))[:500] if not isinstance(result, dict) else "Done."
+            job_id = self._queue_skill_run(
+                skill_name,
+                chat_id=chat_id,
+                metadata={"source": "telegram", "chat_id": chat_id},
+            )
+            return f"Queued `{skill_name}` as job `{job_id}`. Use /jobs or /status."
         if cmd == "/status":
+            summary = self.job_manager.get_summary()
+            health = [
+                f"MATLAB={ 'healthy' if self.matlab_bridge.is_healthy() else 'unhealthy' }",
+                f"memory_store={ 'healthy' if self.memory_store.is_healthy() else 'unhealthy' }",
+                f"watchdog={ 'on' if self.settings.watchdog.enabled else 'off' }",
+                f"sentry={ 'on' if self.settings.sentry.enabled else 'off' }",
+            ]
+            jobs = self.job_manager.list_jobs(limit=5)
+            if jobs:
+                lines = [
+                    f"Health: {', '.join(health)}",
+                    (
+                        "Jobs: "
+                        f"queued={summary['queued']} running={summary['running']} "
+                        f"done={summary['done']} failed={summary['failed']} "
+                        f"timeout={summary['timeout']} cancelled={summary['cancelled']}"
+                    ),
+                    "",
+                    "Recent jobs:",
+                ]
+                lines.extend(
+                    f"{j['job_id']} · {j['skill_name']} · {j['status']}"
+                    for j in jobs
+                )
+                return "\n".join(lines)
             journal_path = Path(self.settings.lab_journal.path)
             if not journal_path.is_file():
-                return "LAB_JOURNAL.md is empty or missing."
+                return (
+                    f"Health: {', '.join(health)}\n"
+                    f"Jobs: queued={summary['queued']} running={summary['running']} total={summary['total']}\n"
+                    "LAB_JOURNAL.md is empty or missing."
+                )
             lines = journal_path.read_text(encoding="utf-8").strip().splitlines()
             last = lines[-5:] if len(lines) >= 5 else lines
-            return "\n".join(last) or "(no entries)"
+            return (
+                f"Health: {', '.join(health)}\n"
+                f"Jobs: queued={summary['queued']} running={summary['running']} total={summary['total']}\n\n"
+                + ("\n".join(last) or "(no entries)")
+            )
+        if cmd == "/job":
+            if not args:
+                return "Usage: /job <job_id>"
+            job_id = args[0].strip()
+            j = self.job_manager.get_job_status(job_id)
+            if j.get("status") == "not_found":
+                return f"Job `{job_id}` not found."
+            parts = [
+                f"job_id: {j.get('job_id')}",
+                f"skill: {j.get('skill_name')}",
+                f"status: {j.get('status')}",
+                f"created_at: {j.get('created_at')}",
+            ]
+            if j.get("started_at"):
+                parts.append(f"started_at: {j.get('started_at')}")
+            if j.get("completed_at"):
+                parts.append(f"completed_at: {j.get('completed_at')}")
+            if j.get("error"):
+                parts.append(f"error: {j.get('error')}")
+            return "\n".join(parts)
+        if cmd == "/jobs":
+            jobs = self.job_manager.list_jobs(limit=10)
+            if not jobs:
+                return "No jobs yet."
+            summary = self.job_manager.get_summary()
+            head = (
+                "Jobs summary: "
+                f"queued={summary['queued']} running={summary['running']} "
+                f"done={summary['done']} failed={summary['failed']} timeout={summary['timeout']}"
+            )
+            lines = [head, ""]
+            lines.extend(
+                f"{j['job_id']} · {j['skill_name']} · {j['status']}"
+                for j in jobs
+            )
+            return "\n".join(lines)
+        if cmd == "/cancel":
+            if not args:
+                return "Usage: /cancel <job_id>"
+            ok = self.job_manager.cancel_job(args[0].strip())
+            return "Cancellation requested." if ok else "Job not found."
+        if cmd == "/experiments":
+            skill = args[0].strip() if args else None
+            rows = self.experiment_tracker.list_experiments(skill_name=skill, last_n=5)
+            if not rows:
+                return "No experiments yet."
+            lines = []
+            for r in rows:
+                dur = f"{r.duration_seconds:.1f}s" if r.duration_seconds is not None else "-"
+                lines.append(f"{r.experiment_id} · {r.skill_name} · {r.status} · {dur}")
+            return "\n".join(lines)
+        if cmd == "/compare":
+            if len(args) < 2:
+                return "Usage: /compare <exp_id_1> <exp_id_2> [exp_id_3 ...]"
+            rows = self.experiment_tracker.compare(args[:5])
+            if not rows:
+                return "No matching experiments."
+            lines = []
+            for r in rows:
+                metrics = r.get("metrics") or {}
+                lines.append(
+                    f"{r.get('experiment_id')} · {r.get('skill_name')} · {r.get('status')} · metrics={metrics}"
+                )
+            return "\n\n".join(lines)
         if cmd == "/audit":
             mod = load_skill_logic("workspace_auditor")
             if not mod or not hasattr(mod, "run"):
@@ -169,7 +397,7 @@ class Daemon:
             if code == 0:
                 return f"Synced {len(paths)} file(s) into {self.settings.sync.rsync_dest or 'data_in'}."
             return f"Rsync failed (code {code}). Check RSYNC_SOURCE and network."
-        return "Unknown command. Use /status, /audit, /report [project_id], /run <skill_name>, or /sync."
+        return "Unknown command. Use /status, /jobs, /job <job_id>, /cancel <job_id>, /experiments [skill], /compare <id1> <id2>, /audit, /report [project_id], /run <skill_name>, or /sync."
 
     def _handle_nl_message(
         self, message: str, chat_id: int, buffer: list[dict[str, str]]
@@ -215,11 +443,13 @@ class Daemon:
         if intent_result.intent == "run_skill":
             skill_name = resolve_skill_from_nl(intent_result.skill_name, skills)
             if skill_name:
-                result = self.rpi_executor.run_rpi(skill_name, chat_id=chat_id)
-                if isinstance(result, dict) and result.get("pending"):
-                    reply = "Approval requested. Reply Yes or No (or use the buttons)."
-                else:
-                    reply = str(getattr(result, "message", result))[:500] if not isinstance(result, dict) else str(result)[:500]
+                job_id = self._queue_skill_run(
+                    skill_name,
+                    context=message,
+                    chat_id=chat_id,
+                    metadata={"source": "telegram_nl", "chat_id": chat_id, "intent": "run_skill"},
+                )
+                reply = f"Queued `{skill_name}` as job `{job_id}`. Use /jobs to track progress."
                 if journal_path:
                     append_lab_journal(journal_path, f"NL→{skill_name}: {reply[:100]}", source="Telegram", artifact_paths=[])
             else:
@@ -284,6 +514,7 @@ class Daemon:
 
         # Initialize subsystems
         self.memory_store.initialize()
+        self.job_manager.start()
         self.matlab_bridge.start()
         self.watchdog.start()
         self.sentry.start()
@@ -294,6 +525,18 @@ class Daemon:
                 nl_handler=self._handle_nl_message,
                 hitl_response_callback=self._hitl_response,
             )
+
+        if os.environ.get("MATCLAW_KEYSTROKE_GATEWAY", "").strip().lower() in ("1", "true", "yes", "on"):
+            try:
+                self._hybrid_keystroke = KeystrokeManager(
+                    self.rpi_executor,
+                    self.voice_client,
+                    settings=self.settings,
+                )
+                self._hybrid_keystroke.start()
+                logger.info("Hybrid keystroke gateway enabled (Ctrl+Alt+M). Set voice transcript via Daemon.voice_client.set_transcript.")
+            except Exception:
+                logger.exception("Hybrid keystroke gateway failed to start; continuing without it.")
 
         # Start heartbeat
         self._heartbeat_thread = threading.Thread(
@@ -337,10 +580,20 @@ class Daemon:
             self.telegram.stop_listener()
         except Exception:
             logger.exception("Error while stopping Telegram listener.")
+        if self._hybrid_keystroke is not None:
+            try:
+                self._hybrid_keystroke.stop()
+            except Exception:
+                logger.exception("Error while stopping hybrid keystroke gateway.")
+            self._hybrid_keystroke = None
         try:
             self.memory_store.close()
         except Exception:
             logger.exception("Error while closing memory store.")
+        try:
+            self.job_manager.stop()
+        except Exception:
+            logger.exception("Error while stopping job manager.")
         logger.info("MatClaw daemon stopped.")
 
     def _heartbeat_loop(self) -> None:

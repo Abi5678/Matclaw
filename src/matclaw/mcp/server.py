@@ -22,9 +22,12 @@ from mcp.server.session import ServerSession
 
 from src.matclaw.config.base_config import MatClawSettings
 from src.matclaw.config.logging_config import configure_logging
+from src.matclaw.core.experiment import ExperimentTracker
 from src.matclaw.core.rpi_executor import RPIExecutor
 from src.matclaw.lab_journal import append_lab_journal
 from src.matclaw.matlab.matlab_bridge import MatlabBridge
+from src.matclaw.memory.consolidator import ConsolidationEngine
+from src.matclaw.memory.knowledge_base import KnowledgeBase
 from src.matclaw.memory.memory import MemoryStore
 from src.matclaw.memory.memory_manager import MemoryManager
 from src.matclaw.skills import get_skill_instructions, list_skills, load_skill_logic
@@ -50,6 +53,11 @@ NL_TO_SKILL: dict[str, str] = {
     "simulate": "simulink_runner",
     "run model": "simulink_runner",
     "simulink": "simulink_runner",
+    "fix file": "file_doctor",
+    "analyze file": "file_doctor",
+    "fix and run": "file_doctor",
+    "check file": "file_doctor",
+    "debug file": "file_doctor",
 }
 
 
@@ -59,6 +67,9 @@ class MatClawContext:
 
     matlab_bridge: MatlabBridge
     memory_manager: MemoryManager
+    experiment_tracker: ExperimentTracker
+    knowledge_base: KnowledgeBase
+    consolidation_engine: ConsolidationEngine
     rpi_executor: RPIExecutor
     journal_path: Path
 
@@ -110,13 +121,26 @@ async def matclaw_lifespan(server: FastMCP):
     matlab_bridge = MatlabBridge(settings=settings.matlab)
     memory_store = MemoryStore(settings=settings.memory)
     memory_manager = MemoryManager(persist_directory=".matclaw_chromadb")
+    experiment_tracker = ExperimentTracker(".matclaw_experiments.sqlite3")
 
     memory_store.initialize()
     matlab_bridge.start()
 
+    knowledge_base = KnowledgeBase(memory_manager)
+    ltm = settings.long_term_memory
+    consolidation_engine = ConsolidationEngine(
+        experiment_tracker=experiment_tracker,
+        knowledge_base=knowledge_base,
+        llm_provider=ltm.consolidation_llm_provider or settings.llm.provider,
+        llm_model=ltm.consolidation_llm_model or settings.llm.model,
+    )
+
     rpi_executor = RPIExecutor(
         matlab_bridge=matlab_bridge,
         memory_manager=memory_manager,
+        experiment_tracker=experiment_tracker,
+        knowledge_base=knowledge_base,
+        consolidation_engine=consolidation_engine,
     )
 
     journal_path = Path(settings.lab_journal.path).resolve() if settings.lab_journal.enabled else None
@@ -130,6 +154,9 @@ async def matclaw_lifespan(server: FastMCP):
     app_ctx = MatClawContext(
         matlab_bridge=matlab_bridge,
         memory_manager=memory_manager,
+        experiment_tracker=experiment_tracker,
+        knowledge_base=knowledge_base,
+        consolidation_engine=consolidation_engine,
         rpi_executor=rpi_executor,
         journal_path=journal_path or Path("LAB_JOURNAL.md"),
     )
@@ -373,6 +400,299 @@ def list_available_skills(ctx: Context[ServerSession, MatClawContext]) -> str:
         first_line = next((l.strip() for l in instr.split("\n") if l.strip() and not l.startswith("#")), "")[:80]
         lines.append(f"- **{name}**: {first_line}")
     return "\n".join(lines) if lines else "No skills installed."
+
+
+@mcp.tool()
+def list_experiments(
+    ctx: Context[ServerSession, MatClawContext],
+    skill_name: str = "",
+    last_n: int = 10,
+) -> str:
+    """List recent experiments, optionally filtered by skill."""
+    app_ctx = _get_app_ctx(ctx)
+    rows = app_ctx.experiment_tracker.list_experiments(skill_name=skill_name or None, last_n=last_n)
+    if not rows:
+        return "No experiments found."
+    lines = []
+    for r in rows:
+        dur = f"{r.duration_seconds:.2f}s" if r.duration_seconds is not None else "-"
+        lines.append(f"{r.experiment_id} | {r.skill_name} | {r.status} | {dur}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def compare_experiments(
+    ctx: Context[ServerSession, MatClawContext],
+    experiment_ids: list[str],
+) -> str:
+    """Compare experiments side-by-side (metrics/status)."""
+    app_ctx = _get_app_ctx(ctx)
+    rows = app_ctx.experiment_tracker.compare(experiment_ids)
+    if not rows:
+        return "No matching experiments."
+    parts: list[str] = []
+    for r in rows:
+        parts.append(
+            "\n".join(
+                [
+                    f"experiment_id: {r.get('experiment_id')}",
+                    f"skill_name: {r.get('skill_name')}",
+                    f"status: {r.get('status')}",
+                    f"duration_seconds: {r.get('duration_seconds')}",
+                    f"metrics: {r.get('metrics')}",
+                ]
+            )
+        )
+    return "\n\n---\n\n".join(parts)
+
+
+@mcp.tool()
+def get_experiment_trend(
+    ctx: Context[ServerSession, MatClawContext],
+    skill_name: str,
+    metric_key: str,
+    last_n: int = 20,
+) -> str:
+    """Return time-series points for a metric across recent experiments."""
+    app_ctx = _get_app_ctx(ctx)
+    points = app_ctx.experiment_tracker.trend(skill_name=skill_name, metric_key=metric_key, last_n=last_n)
+    if not points:
+        return "No trend points found."
+    return "\n".join(f"{p['started_at']} | {p['experiment_id']} | {p['value']}" for p in points)
+
+
+# ---------------------------------------------------------------------------
+# File pipeline tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def read_matlab_file(file_path: str, ctx: Context[ServerSession, MatClawContext]) -> str:
+    """Read a MATLAB .m file from the workspace and return its contents.
+    Use this to inspect code before deciding to fix or run it."""
+    from src.matclaw.security.file_access import guard_file_access
+
+    decision = guard_file_access(file_path)
+    if not decision.allow:
+        return f"Access denied: {decision.reason}"
+    app_ctx = _get_app_ctx(ctx)
+    content = decision.resolved_path.read_text(errors="replace")
+    _log_to_journal(app_ctx, f"read_matlab_file: {file_path} ({len(content)} chars)")
+    return content
+
+
+@mcp.tool()
+def analyze_fix_run(
+    file_path: str,
+    ctx: Context[ServerSession, MatClawContext],
+    action: str = "fix_and_run",
+) -> str:
+    """Analyze a .m file for errors, fix them, and run it autonomously.
+
+    Actions: "analyze" (diagnose only), "fix" (diagnose + patch),
+    "run" (just execute), "fix_and_run" (full pipeline).
+    Example: analyze_fix_run("test.m", action="fix_and_run")
+    """
+    from src.matclaw.debug.debug_agent import DebugAgent
+    from src.matclaw.security.file_access import guard_file_access
+
+    app_ctx = _get_app_ctx(ctx)
+    decision = guard_file_access(file_path)
+    if not decision.allow:
+        return f"Access denied: {decision.reason}"
+    debug_agent = DebugAgent(
+        app_ctx.matlab_bridge,
+        matlab_root=decision.resolved_path.parent,
+        memory_manager=app_ctx.memory_manager,
+        journal_path=app_ctx.journal_path,
+        knowledge_base=app_ctx.knowledge_base,
+    )
+    result = debug_agent.analyze_and_fix_file(
+        decision.resolved_path,
+        action=action,
+    )
+    parts = []
+    if result.fixed:
+        parts.append("Fixed and ran successfully.")
+    elif result.fix_error:
+        parts.append(f"Fix failed: {result.fix_error}")
+    if result.suggested_changes:
+        parts.append(f"Changes: {result.suggested_changes}")
+    if result.applied_to_source:
+        parts.append(f"Applied to source (backup: {decision.resolved_path}.bak)")
+    summary = " | ".join(parts) or "Analysis complete."
+    _log_to_journal(app_ctx, f"analyze_fix_run: {file_path} -> {summary[:200]}")
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Long-term memory tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def query_memory(
+    question: str,
+    ctx: Context[ServerSession, MatClawContext],
+    types: str = "",
+    skill_name: str = "",
+) -> str:
+    """Search MatClaw's long-term knowledge base using natural language.
+
+    Use this to ask questions like:
+    - "What PID gains worked best for motor control?"
+    - "What did we learn about oscillation?"
+    - "What approach should I try for this plant model?"
+
+    Filter by types (comma-separated): result, lesson, strategy, failure, debug_fix, insight.
+    Filter by skill_name to narrow to a specific skill.
+    """
+    app_ctx = _get_app_ctx(ctx)
+    type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
+    results = app_ctx.knowledge_base.query(
+        question,
+        types=type_list,
+        skill_name=skill_name or None,
+        n_results=10,
+    )
+    if not results:
+        return "No relevant knowledge found."
+    lines = []
+    for i, r in enumerate(results, 1):
+        meta = r.get("metadata") or {}
+        doc = r.get("document") or ""
+        entry_type = meta.get("type", "unknown")
+        dist = r.get("distance", 0)
+        lines.append(f"{i}. [{entry_type}] {doc[:300]} (relevance: {1 - dist:.2f})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def best_experiment_tool(
+    skill_name: str,
+    metric_key: str,
+    ctx: Context[ServerSession, MatClawContext],
+    minimize: bool = False,
+) -> str:
+    """Find the experiment with the best value for a given metric.
+
+    Examples: best_experiment_tool("pid_optimizer", "settling_time", minimize=True)
+    """
+    app_ctx = _get_app_ctx(ctx)
+    rec = app_ctx.experiment_tracker.best_experiment(
+        skill_name=skill_name,
+        metric_key=metric_key,
+        minimize=minimize,
+    )
+    if not rec:
+        return f"No successful experiments found for {skill_name} with metric {metric_key}."
+    import json
+    return (
+        f"Best {metric_key} = {rec.metrics.get(metric_key)}\n"
+        f"Experiment: {rec.experiment_id}\n"
+        f"Date: {rec.started_at.isoformat()[:10]}\n"
+        f"Params: {json.dumps(rec.params)}\n"
+        f"All metrics: {json.dumps(rec.metrics)}\n"
+        f"Duration: {rec.duration_seconds:.1f}s" if rec.duration_seconds else ""
+    )
+
+
+@mcp.tool()
+def experiment_trend_range(
+    skill_name: str,
+    metric_key: str,
+    ctx: Context[ServerSession, MatClawContext],
+    start_date: str = "",
+    end_date: str = "",
+) -> str:
+    """Return metric trend within a date range (ISO format).
+
+    Defaults to last 30 days if no dates provided.
+    Example: experiment_trend_range("pid_optimizer", "settling_time", start_date="2026-01-01")
+    """
+    from datetime import datetime, timedelta, timezone
+    app_ctx = _get_app_ctx(ctx)
+    now = datetime.now(timezone.utc)
+    start = datetime.fromisoformat(start_date) if start_date else now - timedelta(days=30)
+    end = datetime.fromisoformat(end_date) if end_date else now
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    points = app_ctx.experiment_tracker.trend_in_range(
+        skill_name=skill_name,
+        metric_key=metric_key,
+        start_date=start,
+        end_date=end,
+    )
+    if not points:
+        return "No trend data found in the specified range."
+    return "\n".join(f"{p['started_at']} | {p['experiment_id']} | {p['value']}" for p in points)
+
+
+@mcp.tool()
+def skill_summary(
+    skill_name: str,
+    ctx: Context[ServerSession, MatClawContext],
+) -> str:
+    """Return aggregate statistics for a skill: total runs, success rate, best metrics."""
+    import json
+    app_ctx = _get_app_ctx(ctx)
+    summary = app_ctx.experiment_tracker.skill_summary(skill_name)
+    if summary.get("total_runs", 0) == 0:
+        return f"No experiments found for skill '{skill_name}'."
+    return json.dumps(summary, indent=2, default=str)
+
+
+@mcp.tool()
+def consolidate_memory(
+    ctx: Context[ServerSession, MatClawContext],
+    skill_name: str = "",
+) -> str:
+    """Trigger LLM-powered memory consolidation to extract lessons and strategies.
+
+    Consolidates raw experiment data into higher-level insights.
+    Pass a skill_name to consolidate one skill, or leave empty for all.
+    """
+    app_ctx = _get_app_ctx(ctx)
+    if skill_name:
+        insights = app_ctx.consolidation_engine.consolidate_skill(skill_name)
+        if not insights:
+            return f"No new data to consolidate for {skill_name}."
+        _log_to_journal(app_ctx, f"consolidate_memory: {skill_name} -> {len(insights)} insights")
+        return f"Generated {len(insights)} insights for {skill_name}:\n" + "\n".join(f"- {i}" for i in insights)
+    else:
+        all_insights = app_ctx.consolidation_engine.consolidate_all()
+        if not all_insights:
+            return "No new data to consolidate."
+        parts = []
+        for sk, ins in all_insights.items():
+            parts.append(f"**{sk}** ({len(ins)} insights):\n" + "\n".join(f"  - {i}" for i in ins))
+        _log_to_journal(app_ctx, f"consolidate_memory: all -> {sum(len(v) for v in all_insights.values())} insights")
+        return "\n\n".join(parts)
+
+
+@mcp.tool()
+def store_lesson(
+    skill_name: str,
+    lesson: str,
+    ctx: Context[ServerSession, MatClawContext],
+    cause: str = "",
+    effect: str = "",
+) -> str:
+    """Manually store a lesson learned in the knowledge base.
+
+    Example: store_lesson("pid_optimizer", "Kd > 0.1 causes ringing", cause="high Kd", effect="oscillation")
+    """
+    app_ctx = _get_app_ctx(ctx)
+    entry_id = app_ctx.knowledge_base.store_lesson(
+        skill_name=skill_name,
+        lesson_text=lesson,
+        cause=cause,
+        effect=effect,
+    )
+    _log_to_journal(app_ctx, f"store_lesson: {skill_name} -> {lesson[:100]}")
+    return f"Lesson stored (id: {entry_id})."
 
 
 def main() -> None:

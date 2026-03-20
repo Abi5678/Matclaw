@@ -83,6 +83,28 @@ MATCLAW_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "analyze_file",
+            "description": "Read, analyze, fix, and/or run a MATLAB .m file. Use when user mentions a .m filename and wants to: check it, fix it, run it, debug it, or analyze it. Triggers: 'check test.m', 'fix controller.m', 'run my_script.m', 'analyze pid_eval.m', 'fix test.m and run it', 'can you access test.m'. Do NOT use run_matlab for .m file operations — use this tool instead.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the .m file (e.g. 'test.m', 'matlab/controller.m')",
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "What to do: 'analyze' (diagnose only), 'fix' (diagnose + patch), 'run' (just execute), 'fix_and_run' (full pipeline). Default: 'fix_and_run'.",
+                        "enum": ["analyze", "fix", "run", "fix_and_run"],
+                    },
+                },
+                "required": ["file_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "query_memory",
             "description": "Search memory for past results. Use when user asks: 'What happened last time?', 'Previous gains?', 'What did we do?', 'Last run?', 'Past results'. Do NOT use for plots or code execution.",
             "parameters": {
@@ -106,7 +128,7 @@ def get_tools_for_nemotron() -> list[dict]:
     tools = []
     for t in MATCLAW_TOOLS:
         name = t["function"]["name"]
-        if name == "run_matlab" or name == "query_memory":
+        if name in ("run_matlab", "query_memory", "analyze_file"):
             tools.append(t)
         elif name in available:
             tools.append(t)

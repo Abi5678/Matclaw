@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Callable, Any
 
 from src.matclaw.config.base_config import SentrySettings, LabJournalSettings
 from src.matclaw.core.rpi_executor import RPIExecutor
@@ -34,11 +35,42 @@ class SentryFileHandler(FileSystemEventHandler):
         executor: RPIExecutor,
         journal_path: Path | None = None,
         patterns: list[str] | None = None,
+        submit_job: Callable[[str, Callable[[], Any], float | None, dict[str, Any] | None], str] | None = None,
     ) -> None:
         self.executor = executor
         self.journal_path = journal_path
-        self.patterns = patterns or ["*.mat", "*.csv", "*.slx"]
+        self.patterns = patterns or ["*.mat", "*.csv", "*.slx", "*.m"]
         self.suffixes = [p.lstrip("*").lower() if p.startswith("*") else p.lower() for p in self.patterns]
+        self.submit_job = submit_job
+
+    def _process_file(self, path: Path, source: str) -> tuple[str, list[str]]:
+        summary, artifact_paths = self.executor.run_on_file(path)
+        # Background heartbeat: Nemotron summarizes new data files (even when UI closed)
+        try:
+            import os
+            if os.environ.get("NVIDIA_API_KEY"):
+                from src.matclaw.llm.nemotron_client import NemotronClient
+                from src.matclaw.watchdog.parsers import load_mat, load_csv
+                meta = {}
+                if path.suffix.lower() == ".mat":
+                    meta = load_mat(path)
+                elif path.suffix.lower() == ".csv":
+                    meta = load_csv(path)
+                if meta:
+                    client = NemotronClient()
+                    ai_summary = client.summarize_file(str(path), meta)
+                    if ai_summary:
+                        summary = f"{summary} | Nemotron: {ai_summary}"
+        except Exception:
+            pass
+        if self.journal_path:
+            append_lab_journal(
+                self.journal_path,
+                summary,
+                source=source,
+                artifact_paths=artifact_paths,
+            )
+        return summary, artifact_paths
 
     def _should_handle(self, path: Path) -> bool:
         return path.suffix.lower() in self.suffixes or any(s in path.name.upper() for s in ("PID",))
@@ -53,32 +85,16 @@ class SentryFileHandler(FileSystemEventHandler):
             return
         logger.info("Sentry: new file detected, initiating RPI — %s", path)
         try:
-            summary, artifact_paths = self.executor.run_on_file(path)
-            # Background heartbeat: Nemotron summarizes new data files (even when UI closed)
-            try:
-                import os
-                if os.environ.get("NVIDIA_API_KEY"):
-                    from src.matclaw.llm.nemotron_client import NemotronClient
-                    from src.matclaw.watchdog.parsers import load_mat, load_csv
-                    meta = {}
-                    if path.suffix.lower() == ".mat":
-                        meta = load_mat(path)
-                    elif path.suffix.lower() == ".csv":
-                        meta = load_csv(path)
-                    if meta:
-                        client = NemotronClient()
-                        ai_summary = client.summarize_file(str(path), meta)
-                        if ai_summary:
-                            summary = f"{summary} | Nemotron: {ai_summary}"
-            except Exception:
-                pass
-            if self.journal_path:
-                append_lab_journal(
-                    self.journal_path,
-                    summary,
-                    source=f"Sentry:{path.name}",
-                    artifact_paths=artifact_paths,
+            if self.submit_job is not None:
+                job_id = self.submit_job(
+                    "sentry_run",
+                    lambda: self._process_file(path, source=f"Sentry:{path.name}"),
+                    None,
+                    {"source_file": str(path)},
                 )
+                logger.info("Sentry: queued job %s for %s", job_id, path.name)
+            else:
+                self._process_file(path, source=f"Sentry:{path.name}")
         except Exception:
             logger.exception("Sentry RPI run failed for %s", path)
 
@@ -91,14 +107,16 @@ class SentryFileHandler(FileSystemEventHandler):
             return
         logger.info("Sentry: .slx model modified — %s", path)
         try:
-            summary, artifact_paths = self.executor.run_on_file(path)
-            if self.journal_path:
-                append_lab_journal(
-                    self.journal_path,
-                    summary,
-                    source=f"Sentry:modified:{path.name}",
-                    artifact_paths=artifact_paths,
+            if self.submit_job is not None:
+                job_id = self.submit_job(
+                    "sentry_run",
+                    lambda: self._process_file(path, source=f"Sentry:modified:{path.name}"),
+                    None,
+                    {"source_file": str(path)},
                 )
+                logger.info("Sentry: queued job %s for modified %s", job_id, path.name)
+            else:
+                self._process_file(path, source=f"Sentry:modified:{path.name}")
         except Exception:
             logger.exception("Sentry RPI run failed for modified %s", path)
 
@@ -111,10 +129,12 @@ class SentryWatchdog:
         settings: SentrySettings,
         lab_settings: LabJournalSettings,
         executor: RPIExecutor,
+        submit_job: Callable[[str, Callable[[], Any], float | None, dict[str, Any] | None], str] | None = None,
     ) -> None:
         self.settings = settings
         self.lab_settings = lab_settings
         self.executor = executor
+        self.submit_job = submit_job
         self._observer: object = None
 
     def start(self) -> None:
@@ -141,7 +161,8 @@ class SentryWatchdog:
         handler = SentryFileHandler(
             self.executor,
             journal_path=journal_path,
-            patterns=["*.mat", "*.csv", "*.slx"],
+            patterns=["*.mat", "*.csv", "*.slx", "*.m"],
+            submit_job=self.submit_job,
         )
         self._observer = Observer()
         self._observer.schedule(handler, str(data_in), recursive=True)  # type: ignore[attr-defined]

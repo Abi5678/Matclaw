@@ -14,38 +14,24 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any
 
+from src.matclaw.llm.llm_client import call_chat_completion, resolve_api_key
+
 logger = logging.getLogger(__name__)
-
-try:
-    from anthropic import Anthropic
-except ImportError:
-    Anthropic = None  # type: ignore[misc, assignment]
-
-try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None  # type: ignore[assignment]
-
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None  # type: ignore[misc, assignment]
-
-NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1"
 
 
 @dataclass
 class NLIntent:
     """Structured result from the NL router."""
 
-    intent: str  # "run_skill" | "execute_code" | "ask_question"
+    intent: str  # "run_skill" | "execute_code" | "ask_question" | "analyze_file"
     skill_name: str | None = None
     matlab_code: str | None = None
     query: str | None = None
+    file_path: str | None = None    # extracted .m file path (for analyze_file intent)
+    file_action: str | None = None  # "analyze" | "fix" | "run" | "fix_and_run"
     raw_response: str = ""
 
 
@@ -60,67 +46,16 @@ Intents:
    Examples: "Plot a sine wave", "Compute roots of x^2-5x+6", "Draw a red line"
 3. ask_question - User asks about past results, parameters, or history. Query memory.
    Examples: "What was the last stable gain?", "What did we tune last?", "Show me recent results"
+4. analyze_file - User wants to read, analyze, fix, or run a MATLAB .m file.
+   Extract file_path from the message. Set file_action to one of: "analyze", "fix", "run", "fix_and_run".
+   Examples: "fix test.m and run it", "analyze controller.m", "run pid_controller.m", "check my_script.m for errors"
 
 Respond with ONLY a JSON object, no other text:
-{{"intent": "run_skill"|"execute_code"|"ask_question", "skill_name": "..." or null, "matlab_code": "..." or null, "query": "..." or null}}
+{{"intent": "run_skill"|"execute_code"|"ask_question"|"analyze_file", "skill_name": "..." or null, "matlab_code": "..." or null, "query": "..." or null, "file_path": "..." or null, "file_action": "..." or null}}
 
 For execute_code, provide valid MATLAB code as a string. Use disp() for scalar output. For plots, use figure; plot(...); and optionally exportgraphics if needed.
-For follow-ups like "Now make the line red", infer from context (e.g. add 'r' to plot, or set Color)."""
-
-
-def _call_gemini(
-    system: str, messages: list[dict[str, Any]], api_key: str, model: str
-) -> str:
-    """Call Gemini API for chat completion."""
-    if genai is None:
-        raise RuntimeError("google-generativeai not installed")
-    genai.configure(api_key=api_key)
-    m = genai.GenerativeModel(model)
-    # Build prompt: system + conversation
-    parts = [system, "\n\n"]
-    for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        parts.append(f"{role.upper()}: {content}\n")
-    parts.append("\nRespond with ONLY a JSON object, no other text.")
-    prompt = "".join(parts)
-    r = m.generate_content(prompt)
-    return (r.text or "").strip()
-
-
-def _call_anthropic(
-    system: str, messages: list[dict[str, Any]], api_key: str, model: str
-) -> str:
-    """Call Anthropic API for chat completion."""
-    if Anthropic is None:
-        raise RuntimeError("anthropic not installed")
-    client = Anthropic(api_key=api_key)
-    resp = client.messages.create(
-        model=model,
-        max_tokens=512,
-        system=system,
-        messages=messages,
-    )
-    return (resp.content[0].text if resp.content else "").strip()
-
-
-def _call_nvidia(
-    system: str, messages: list[dict[str, Any]], api_key: str, model: str
-) -> str:
-    """Call NVIDIA Nemotron API (OpenAI-compatible) for chat completion."""
-    if OpenAI is None:
-        raise RuntimeError("openai not installed")
-    client = OpenAI(base_url=NVIDIA_API_BASE, api_key=api_key)
-    # Prepend system as first user message (NVIDIA API format)
-    openai_messages = [{"role": "system", "content": system}]
-    for m in messages:
-        openai_messages.append({"role": m["role"], "content": m["content"]})
-    resp = client.chat.completions.create(
-        model=model,
-        messages=openai_messages,
-        max_tokens=512,
-    )
-    return (resp.choices[0].message.content if resp.choices else "").strip()
+For follow-ups like "Now make the line red", infer from context (e.g. add 'r' to plot, or set Color).
+For analyze_file, extract the .m filename from the user's message and infer the action (fix, run, analyze, or fix_and_run)."""
 
 
 def route_nl_message(
@@ -146,13 +81,7 @@ def route_nl_message(
     Returns:
         NLIntent with intent and extracted parameters.
     """
-    key = api_key or (
-        os.environ.get("NVIDIA_API_KEY")
-        if provider == "nvidia"
-        else os.environ.get("GOOGLE_API_KEY")
-        if provider == "google"
-        else os.environ.get("ANTHROPIC_API_KEY")
-    )
+    key = resolve_api_key(provider, api_key)
     if not key:
         logger.warning("API key not set (NVIDIA_API_KEY / GOOGLE_API_KEY / ANTHROPIC_API_KEY); NL routing disabled.")
         return NLIntent(intent="ask_question", query=message, raw_response="")
@@ -168,21 +97,14 @@ def route_nl_message(
     messages.append({"role": "user", "content": message})
 
     try:
-        if provider == "nvidia":
-            if OpenAI is None:
-                logger.warning("openai not installed; NL routing disabled.")
-                return NLIntent(intent="ask_question", query=message, raw_response="")
-            text = _call_nvidia(system, messages, key, model)
-        elif provider == "google":
-            if genai is None:
-                logger.warning("google-generativeai not installed; NL routing disabled.")
-                return NLIntent(intent="ask_question", query=message, raw_response="")
-            text = _call_gemini(system, messages, key, model)
-        else:
-            if Anthropic is None:
-                logger.warning("anthropic not installed; NL routing disabled.")
-                return NLIntent(intent="ask_question", query=message, raw_response="")
-            text = _call_anthropic(system, messages, key, model)
+        text = call_chat_completion(
+            provider=provider,
+            model=model,
+            system=system,
+            messages=messages,
+            api_key=key,
+            max_tokens=512,
+        )
 
         # Parse JSON from response
         if "```" in text:
@@ -199,7 +121,7 @@ def route_nl_message(
 
         data = json.loads(text)
         intent = data.get("intent", "ask_question")
-        if intent not in ("run_skill", "execute_code", "ask_question"):
+        if intent not in ("run_skill", "execute_code", "ask_question", "analyze_file"):
             intent = "ask_question"
 
         return NLIntent(
@@ -207,6 +129,8 @@ def route_nl_message(
             skill_name=data.get("skill_name") or None,
             matlab_code=data.get("matlab_code") or None,
             query=data.get("query") or message,
+            file_path=data.get("file_path") or None,
+            file_action=data.get("file_action") or None,
             raw_response=text,
         )
     except json.JSONDecodeError as e:

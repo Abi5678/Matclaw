@@ -122,10 +122,16 @@ def run(
 ) -> SkillResult:
     """
     One-shot: research (query memory) → plan → execute (write .md, send via Telegram).
-    Requires memory_manager; telegram_handler optional for sending.
+    Creates its own MemoryManager if none provided.
     """
-    if memory_manager is None:
-        return SkillResult(success=False, error="Report generator requires memory_manager.")
-    r = research(memory_manager, project_id=project_id, query=query, **kwargs)
+    mm = memory_manager
+    if mm is None:
+        try:
+            mm = MemoryManager()
+            mm._ensure_client()
+        except Exception as exc:
+            logger.warning("Could not init MemoryManager: %s — report will have no history.", exc)
+            mm = None
+    r = research(mm, project_id=project_id, query=query, **kwargs) if mm else {"lessons": [], "documents": [], "error": None}
     p = plan(r, **kwargs)
-    return execute(p, memory_manager=memory_manager, telegram_handler=telegram_handler, project_id=project_id, output_dir=output_dir, **kwargs)
+    return execute(p, memory_manager=mm, telegram_handler=telegram_handler, project_id=project_id, output_dir=output_dir, **kwargs)

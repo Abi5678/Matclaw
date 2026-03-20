@@ -7,7 +7,9 @@
     background-color: #0f172a !important;
 }
 [data-testid="stAppViewContainer"] {
-    background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%) !important;
+    background:
+        radial-gradient(900px 380px at 50% -8%, rgba(246,79,50,0.20), rgba(15,23,42,0.0) 58%),
+        linear-gradient(180deg, #0f172a 0%, #1e293b 100%) !important;
 }
 
 /* Sidebar dark */
@@ -153,4 +155,79 @@ section.main [data-testid="stChatInput"],
 }
 .stTabs [aria-selected="true"] {
     color: #f8fafc !important;
+}
+
+/* Unified landing/control-plane hero card */
+.matclaw-hero {
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 20px;
+    padding: 24px 26px;
+    background:
+        radial-gradient(1200px 420px at 50% -10%, rgba(246,79,50,0.30), rgba(10,18,34,0.75) 60%),
+        linear-gradient(145deg, rgba(15,23,42,0.85), rgba(11,19,36,0.65));
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 30px 80px rgba(246,79,50,0.16);
+    backdrop-filter: blur(8px);
+    margin-bottom: 10px;
+}
+.matclaw-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(246,79,50,0.35);
+    background: rgba(246,79,50,0.10);
+    color: #fca58f;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    padding: 6px 12px;
+}
+.matclaw-hero h1 {
+    margin: 12px 0 10px;
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    line-height: 1.06;
+    font-weight: 800;
+    color: #ff7b5e;
+}
+.matclaw-hero .sub {
+    margin: 0;
+    color: rgba(226,232,240,0.85);
+    max-width: 68ch;
+}
+.matclaw-chip-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+}
+.matclaw-chip {
+    border: 1px solid rgba(148,163,184,0.22);
+    border-radius: 12px;
+    padding: 10px 12px;
+    background: rgba(15,23,42,0.35);
+}
+.matclaw-chip .label {
+    font-size: 11px;
+    color: #94a3b8;
+}
+.matclaw-chip .value {
+    font-size: 16px;
+    color: #f8fafc;
+    font-weight: 700;
+}
+
+/* Accent primary buttons, consistent with landing tone */
+.stButton > button[kind="primary"] {
+    background: #ff4f49 !important;
+    border: 1px solid rgba(255,122,99,0.55) !important;
+    color: #fff !important;
+    box-shadow: 0 0 0 1px rgba(255,122,99,0.12), 0 10px 28px rgba(255,79,73,0.20) !important;
+}
+.stButton > button[kind="primary"]:hover {
+    filter: brightness(1.06);
+}
+
+@media (max-width: 900px) {
+    .matclaw-chip-row {
+        grid-template-columns: 1fr;
+    }
 }

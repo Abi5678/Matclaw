@@ -38,6 +38,51 @@ class DebugAgentSettings(BaseModel):
         description="If a fix succeeds, write source.m.bak and apply fix to source file.",
     )
     max_fix_attempts: int = Field(default=2, description="Max number of fix attempts per failure.")
+    debug_llm_provider: str = Field(default="anthropic", description="LLM provider for debug reasoning.")
+    debug_llm_model: str = Field(default="claude-3-5-sonnet-20241022", description="Model for debug reasoning.")
+    debug_llm_api_key: Optional[str] = Field(default=None, description="Optional API key override for debug LLM.")
+    debug_max_rounds: int = Field(default=3, description="Max LLM refinement rounds after heuristic attempt fails.")
+    debug_sandbox: bool = Field(default=True, description="Test fixes in sandbox before applying to source.")
+
+
+class FileDoctorSettings(BaseModel):
+    """Proactive file analysis and fix pipeline."""
+
+    max_file_size_bytes: int = Field(default=2_097_152, description="Max .m file size to read (2 MB).")
+    allowed_suffixes: list[str] = Field(
+        default_factory=lambda: [".m", ".slx", ".mat", ".csv", ".mlx"],
+        description="File suffixes the file doctor is allowed to read.",
+    )
+    workspace_roots: list[str] = Field(
+        default_factory=lambda: ["matlab", "data_in", "."],
+        description="Directories the file doctor may access (relative to project root).",
+    )
+
+
+class LongTermMemorySettings(BaseModel):
+    """Long-term knowledge retention: consolidation, archival, and cleanup."""
+
+    enabled: bool = Field(default=True, description="Whether long-term memory features are active.")
+    archive_after_days: int = Field(
+        default=180,
+        description="Move raw experiments older than this to archive DB.",
+    )
+    prune_artifacts_after_days: int = Field(
+        default=90,
+        description="Remove raw ChromaDB artifacts older than this if consolidated.",
+    )
+    auto_consolidate_every_n: int = Field(
+        default=20,
+        description="Auto-trigger LLM consolidation after this many experiments per skill.",
+    )
+    consolidation_llm_provider: str = Field(
+        default="",
+        description="LLM provider for consolidation (defaults to llm.provider if empty).",
+    )
+    consolidation_llm_model: str = Field(
+        default="",
+        description="LLM model for consolidation (defaults to llm.model if empty).",
+    )
 
 
 class WatchdogSettings(BaseModel):
@@ -72,8 +117,8 @@ class TelegramSettings(BaseModel):
     """Telegram gateway for alerts and remote commands."""
 
     enabled: bool = Field(default=True, description="Whether the Telegram listener and alerts are active.")
-    bot_token: str | None = Field(default=None, description="Bot token (or set TELEGRAM_BOT_TOKEN / TELEGRAM_TOKEN).")
-    chat_id: str | None = Field(default=None, description="Optional default chat ID for alerts (or set TELEGRAM_CHAT_ID).")
+    bot_token: Optional[str] = Field(default=None, description="Bot token (or set TELEGRAM_BOT_TOKEN / TELEGRAM_TOKEN).")
+    chat_id: Optional[str] = Field(default=None, description="Optional default chat ID for alerts (or set TELEGRAM_CHAT_ID).")
 
 
 class HITLSettings(BaseModel):
@@ -90,7 +135,7 @@ class LLMSettings(BaseModel):
         default="nvidia",
         description="One of: anthropic, google, nvidia.",
     )
-    api_key: str | None = Field(
+    api_key: Optional[str] = Field(
         default=None,
         description="API key (or set ANTHROPIC_API_KEY / GOOGLE_API_KEY / NVIDIA_API_KEY).",
     )
@@ -105,7 +150,7 @@ class VisionSettings(BaseModel):
 
     enabled: bool = Field(default=True, description="Whether to analyze plots before sending.")
     provider: str = Field(default="google", description="One of: anthropic, google, nvidia.")
-    api_key: str | None = Field(default=None, description="API key (or set ANTHROPIC_API_KEY / GOOGLE_API_KEY / NVIDIA_API_KEY).")
+    api_key: Optional[str] = Field(default=None, description="API key (or set ANTHROPIC_API_KEY / GOOGLE_API_KEY / NVIDIA_API_KEY).")
     model: str = Field(default="gemini-2.0-flash", description="Model name for vision (NVIDIA VLMs use different model IDs).")
 
 
@@ -134,6 +179,8 @@ class MatClawSettings(BaseSettings):
     hitl: HITLSettings = Field(default_factory=HITLSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
+    file_doctor: FileDoctorSettings = Field(default_factory=FileDoctorSettings)
+    long_term_memory: LongTermMemorySettings = Field(default_factory=LongTermMemorySettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
 
     class Config:
