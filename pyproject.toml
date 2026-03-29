@@ -9,6 +9,9 @@ description = "High-end autonomous agent bridge for MATLAB via MCP."
 authors = [{ name = "MatClaw", email = "dev@matclaw.local" }]
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "httpx>=0.27.0",
     "mcp>=1.0.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",
@@ -33,6 +36,7 @@ dependencies = [
 
 [project.scripts]
 matclaw-mcp = "src.matclaw.mcp.server:main"
+matclaw-server = "src.matclaw.api.main:main"
 
 [project.optional-dependencies]
 dev = [

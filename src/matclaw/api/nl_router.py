@@ -74,9 +74,17 @@ def route_nl_message(text: str) -> tuple[str, dict]:
         if any(kw in lower for kw in keywords):
             return skill, {}
 
+    # project generation hints
+    project_hints = {"create a", "build a", "make a game", "make a project",
+                     "generate project", "snake game", "tic tac toe", "pong",
+                     "dashboard", "web app", "flask app", "html page"}
+    if any(h in lower for h in project_hints):
+        return "project_gen", {}
+
     # keyword-set fallback: strong compute hints
     compute_hints = {"write", "make", "do", "perform", "show", "give me", "try"}
     if any(h in lower for h in compute_hints):
         return "run_matlab", {}
 
-    return "workspace_auditor", {}
+    # Default: treat as conversation
+    return "chat", {}

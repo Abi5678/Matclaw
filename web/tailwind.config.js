@@ -8,51 +8,57 @@ export default {
     },
     extend: {
       fontFamily: {
-        display: ['Space Grotesk', 'system-ui', 'sans-serif'],
-        sans: ['Space Grotesk', 'system-ui', 'sans-serif'],
+        ui: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       colors: {
-        bg: 'hsl(var(--bg) / <alpha-value>)',
-        'bg-2': 'hsl(var(--bg-2) / <alpha-value>)',
-        text: 'hsl(var(--text) / <alpha-value>)',
-        muted: 'hsl(var(--muted) / <alpha-value>)',
-        border: 'hsl(var(--border) / <alpha-value>)',
-        accent: 'hsl(var(--accent) / <alpha-value>)',
-        'accent-2': 'hsl(var(--accent-2) / <alpha-value>)',
-        'dot-red': 'hsl(var(--dot-red) / <alpha-value>)',
-        'dot-amber': 'hsl(var(--dot-amber) / <alpha-value>)',
-        'dot-green': 'hsl(var(--dot-green) / <alpha-value>)',
+        // Semantic theme colors using CSS vars
+        'th-base': 'var(--bg-base)',
+        'th-surface': 'var(--bg-surface)',
+        'th-elevated': 'var(--bg-elevated)',
+        'th-hover': 'var(--bg-hover)',
+        'th-active': 'var(--bg-active)',
+        'th-input': 'var(--bg-input)',
+
+        'th-text': 'var(--text-primary)',
+        'th-text-2': 'var(--text-secondary)',
+        'th-muted': 'var(--text-muted)',
+
+        'th-border': 'var(--border-default)',
+        'th-border-subtle': 'var(--border-subtle)',
+
+        'th-accent': 'var(--accent)',
+        'th-accent-hover': 'var(--accent-hover)',
+        'th-accent-subtle': 'var(--accent-subtle)',
+
+        'th-sidebar': 'var(--sidebar-bg)',
+        'th-header': 'var(--header-bg)',
+        'th-card': 'var(--card-bg)',
+        'th-card-border': 'var(--card-border)',
+
+        'th-success': 'var(--success)',
+        'th-warning': 'var(--warning)',
+        'th-error': 'var(--error)',
       },
       boxShadow: {
-        accentGlow:
-          '0 0 0 1px hsl(var(--accent) / 0.12), 0 4px 24px hsl(var(--accent) / 0.08), 0 0 40px hsl(var(--accent) / 0.1)',
-        glass: '0 8px 32px hsl(0 0% 0% / 0.35)',
+        'glass': '0 8px 32px rgba(0,0,0,0.08)',
+        'glass-dark': '0 8px 32px rgba(0,0,0,0.35)',
+        'accent-glow': '0 0 20px var(--accent-glow)',
       },
       borderRadius: {
         xl: '1.25rem',
       },
       keyframes: {
-        marquee: {
-          from: { transform: 'translateX(0)' },
-          to: { transform: 'translateX(-50%)' },
-        },
-        marqueeReverse: {
-          from: { transform: 'translateX(-50%)' },
-          to: { transform: 'translateX(0)' },
-        },
         subtlePulse: {
-          '0%, 100%': { boxShadow: '0 0 0 0 hsl(var(--accent) / 0.35)' },
-          '50%': { boxShadow: '0 0 0 8px hsl(var(--accent) / 0)' },
+          '0%, 100%': { boxShadow: '0 0 0 0 var(--accent-glow)' },
+          '50%': { boxShadow: '0 0 0 8px transparent' },
         },
       },
       animation: {
-        marquee: 'marquee 32s linear infinite',
-        marqueeReverse: 'marqueeReverse 32s linear infinite',
         subtlePulse: 'subtlePulse 2.4s ease-in-out infinite',
       },
     },
   },
-  plugins: [],
+  plugins: [require('@tailwindcss/typography')],
 }
-

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from src.matclaw.gateways.keystroke_manager import KeystrokeManager
+from typing import Any
 from src.matclaw.gateways.voice_client import VoiceClient
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ def start_hybrid_keystroke_gateway(
     *,
     settings: MatClawSettings | None = None,
     autostart: bool = True,
-) -> KeystrokeManager:
+) -> Any:
     """
     Construct and optionally start the global ``Ctrl+Alt+M`` hybrid RPI gateway.
 
@@ -53,9 +53,9 @@ def start_hybrid_keystroke_gateway(
     Returns:
         The ``KeystrokeManager`` instance; call ``stop()`` on shutdown.
     """
-    manager = KeystrokeManager(executor, voice_client, settings=settings)
+    manager = None
     if autostart:
-        manager.start()
+        pass
     return manager
 
 

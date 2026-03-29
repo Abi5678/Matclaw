@@ -1,13 +1,80 @@
-// ── Session persistence (localStorage) ──────────────────────────────────────
+// ── Session persistence (localStorage + server write-through) ────────────────
+
+const API = 'http://localhost:8000'
+
+/** Fire-and-forget sync to backend. Never throws. */
+function _syncToServer(session: Session): void {
+  fetch(`${API}/api/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(session),
+  }).catch(() => { /* backend unavailable — localStorage is the fallback */ })
+}
+
+/** Fire-and-forget delete on backend. */
+function _deleteFromServer(id: string): void {
+  fetch(`${API}/api/sessions/${id}`, { method: 'DELETE' })
+    .catch(() => {})
+}
+
+/**
+ * Bootstrap: on app start, fetch all sessions from the backend and merge
+ * them into localStorage. Server is source of truth when available.
+ * Falls back gracefully if the server is unreachable.
+ */
+export async function bootstrapFromServer(): Promise<void> {
+  try {
+    const resp = await fetch(`${API}/api/sessions`)
+    if (!resp.ok) return
+    const serverSessions: Session[] = await resp.json()
+    if (!serverSessions.length) return
+
+    const local = readAll()
+    const localById = Object.fromEntries(local.map(s => [s.id, s]))
+    const serverById = Object.fromEntries(serverSessions.map(s => [s.id, s]))
+
+    // Merge: take the version with the latest updatedAt
+    const merged = Object.values({
+      ...localById,
+      ...Object.fromEntries(
+        serverSessions
+          .filter(s => !localById[s.id] || s.updatedAt >= localById[s.id].updatedAt)
+          .map(s => [s.id, s]),
+      ),
+    }).sort((a, b) => b.updatedAt - a.updatedAt)
+
+    writeAll(merged as Session[])
+
+    // Push any local-only sessions up to the server
+    for (const s of local) {
+      if (!serverById[s.id]) _syncToServer(s)
+    }
+  } catch {
+    // Server not reachable — silently continue with localStorage
+  }
+}
+
+export interface ProjectFile {
+  path: string
+  filename: string
+  language: string
+  content: string
+  url: string
+}
+
+export type StreamingPhase = 'thinking' | 'text' | 'tool' | 'done' | null
 
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   text: string
+  thinking?: string
+  streamingPhase?: StreamingPhase
   skill?: string
   plots?: string[]
   metrics?: Record<string, unknown>
   elapsed_ms?: number
+  files?: ProjectFile[]
   ts: number
 }
 
@@ -49,6 +116,7 @@ export function getSession(id: string): Session | null {
 export function saveSession(session: Session): void {
   const all = readAll().filter(s => s.id !== session.id)
   writeAll([session, ...all])
+  _syncToServer(session)
 }
 
 export function deleteSession(id: string): void {
@@ -56,6 +124,7 @@ export function deleteSession(id: string): void {
   if (getActiveSessionId() === id) {
     localStorage.removeItem(ACTIVE_KEY)
   }
+  _deleteFromServer(id)
 }
 
 export function createSession(): Session {

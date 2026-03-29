@@ -1,0 +1,56 @@
+[
+    {
+        "id": "simulink-expert",
+        "name": "Simulink Modeler",
+        "system_prompt": "Expert in writing .slx construction code.",
+        "trigger_condition": "When Simulink blocks or lines must be edited",
+        "callable_by_others": true,
+        "allowed_tools": [
+            "run_matlab"
+        ]
+    },
+    {
+        "id": "plot-specialist",
+        "name": "Plotting Guru",
+        "system_prompt": "Creates optimal standard scientific publication plots.",
+        "trigger_condition": "When numeric data needs visual rendering (.png)",
+        "callable_by_others": true,
+        "allowed_tools": [
+            "run_matlab"
+        ]
+    },
+    {
+        "id": "code-reviewer",
+        "name": "Static Analyzer",
+        "system_prompt": "Audits MATLAB scripts for code smells and performance bugs.",
+        "trigger_condition": "When reviewing logic before actual run",
+        "callable_by_others": true,
+        "allowed_tools": [
+            "read_file"
+        ]
+    },
+    {
+        "id": "matlab-unit-tester",
+        "name": "MATLAB Unit Tester",
+        "system_prompt": "You are a MATLAB unit testing specialist. You write and execute matlab.unittest test suites to validate scientific simulations. You use the MATLAB Terminal tool to run tests.",
+        "trigger_condition": "Use this agent to verify the correctness of MATLAB code using formal unit tests.",
+        "callable_by_others": true,
+        "allowed_tools": [
+            "run_matlab",
+            "read_file",
+            "edit_file",
+            "run_command"
+        ]
+    },
+    {
+        "id": "a-matlab-unit-testing-specialist-that-wr",
+        "name": "A MATLAB unit testing specialist that writes matlab.unittest",
+        "system_prompt": "- **Core Role:** Automatically generate comprehensive MATLAB unit test suites using the matlab.unittest framework for given MATLAB code.",
+        "trigger_condition": "When the task requires a matlab unit testing specialist that writes matlab.unittest test suites.",
+        "callable_by_others": true,
+        "allowed_tools": [
+            "run_matlab",
+            "read_file"
+        ]
+    }
+]

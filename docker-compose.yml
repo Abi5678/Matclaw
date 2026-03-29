@@ -1,28 +1,30 @@
-# MatClaw daemon stack. Run: docker compose up -d
-# Ensure .env exists and contains TELEGRAM_BOT_TOKEN (and optionally TELEGRAM_CHAT_ID).
-
 services:
-  matclaw-daemon:
+  matclaw:
     build: .
-    image: matclaw-daemon:latest
-    container_name: matclaw-daemon
-    env_file: .env
+    image: matclaw:latest
+    container_name: matclaw
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env          # copy .env.example → .env and fill in your API keys
     environment:
-      - PYTHONPATH=/app
-      - MATCLAW_SENTRY__DATA_IN_PATH=/app/data_in
+      MATCLAW_MATLAB__ENABLED: "false"   # set true only if MATLAB engine wheel is installed
+      PYTHONUNBUFFERED: "1"
     volumes:
-      - matclaw_data_in:/app/data_in
-      - matclaw_reports:/app/reports
       - matclaw_chromadb:/app/.matclaw_chromadb
+      - matclaw_sessions:/app/.matclaw_sessions.sqlite3
+      - matclaw_plots:/app/plots
+      - matclaw_projects:/app/projects
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "from src.matclaw.matlab.matlab_bridge import MatlabBridge; from src.matclaw.config import MatClawSettings; s = MatClawSettings(); b = MatlabBridge(settings=s.matlab); b.start(); exit(0 if b.is_healthy() else 1)"]
-      interval: 30s
-      timeout: 30s
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
       retries: 3
-      start_period: 90s
+      start_period: 30s
 
 volumes:
-  matclaw_data_in:
-  matclaw_reports:
   matclaw_chromadb:
+  matclaw_sessions:
+  matclaw_plots:
+  matclaw_projects:

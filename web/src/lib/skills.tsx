@@ -1,6 +1,7 @@
 import {
   Terminal, Brain, SlidersHorizontal, BarChart2, Search,
   FileCode2, FileText, Cpu, Stethoscope, GitBranch, Bot,
+  MessageCircle, FolderOpen,
 } from 'lucide-react'
 
 export interface SkillMeta {
@@ -23,6 +24,8 @@ export const SKILL_META: Record<string, SkillMeta> = {
   simulink_runner:   { label: "Simulink",     icon: <Cpu                className={cls} />, color: "text-teal-400",    bgColor: "bg-teal-400/10"   },
   file_doctor:       { label: "File Doctor",  icon: <Stethoscope        className={cls} />, color: "text-red-400",     bgColor: "bg-red-400/10"    },
   gitlab_reporter:   { label: "GitLab",       icon: <GitBranch          className={cls} />, color: "text-orange-500",  bgColor: "bg-orange-500/10" },
+  chat:              { label: "Chat",         icon: <MessageCircle      className={cls} />, color: "text-emerald-400", bgColor: "bg-emerald-400/10" },
+  project_gen:       { label: "Project",      icon: <FolderOpen         className={cls} />, color: "text-amber-400",   bgColor: "bg-amber-400/10"  },
 }
 
 export function getSkillMeta(skill: string): SkillMeta {
