@@ -54,7 +54,7 @@ def test_nl_router():
     if not (os.getenv('NVIDIA_API_KEY') or os.getenv('GOOGLE_API_KEY')):
         raise SkipTest('No LLM API key (NVIDIA_API_KEY or GOOGLE_API_KEY)')
     try:
-        from src.matclaw.gateways.nl_router import route_nl_message
+        from src.matclaw.api.nl_router import route_nl_message
         r = route_nl_message('Check my workspace', [], ['workspace_auditor', 'pid_optimizer'])
         assert r.intent in ('run_skill', 'execute_code', 'ask_question')
     except Exception as e:

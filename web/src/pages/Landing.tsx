@@ -177,10 +177,15 @@ function Starfield({ className }: { className?: string }) {
 
 function useTyping(text: string, speedMs: number) {
   const [value, setValue] = useState('')
+  const [prevText, setPrevText] = useState(text)
+
+  if (text !== prevText) {
+    setPrevText(text)
+    setValue('')
+  }
 
   useEffect(() => {
     let i = 0
-    setValue('')
     const id = window.setInterval(() => {
       i += 1
       setValue(text.slice(0, i))
@@ -239,7 +244,7 @@ function TerminalWindow() {
       if (isSpace) return <span key={idx}>{t}</span>
 
       const isCmd = /^(npm|python3\.11|python|cd|curl)$/i.test(clean)
-      const isFlag = /^--/.test(clean)
+      const isFlag = clean.startsWith('--')
       const isRepo = /MatClaw|matclaw|src\.|pip|install|vite|main\.py/i.test(clean)
 
       const cls = isCmd

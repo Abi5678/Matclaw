@@ -286,7 +286,7 @@ class DebugAgent:
             try:
                 # Ensure MATLAB sees the file's parent directory
                 self.matlab_bridge.addpath(str(path.parent))
-                success, output = self.matlab_bridge.run_matlab_code(f"run('{path.stem}')")
+                success, output = self.matlab_bridge.run_matlab_code(f"feval('{path.stem}')")
                 if success:
                     self._journal(
                         f"Analyze: {path.name} ran successfully (no fix needed).",

@@ -243,16 +243,19 @@ class MatlabBridge:
                     )
 
                 if timeout_seconds > 0:
-                    with ThreadPoolExecutor(max_workers=1) as pool:
-                        future = pool.submit(_invoke)
-                        try:
-                            result = future.result(timeout=timeout_seconds)
-                        except FuturesTimeoutError:
-                            timed_out = True
-                            failure = MatlabCallResult(
-                                success=False,
-                                error=f"MATLAB call timed out after {timeout_seconds:.1f}s: {request.function}",
-                            )
+                    pool = ThreadPoolExecutor(max_workers=1)
+                    future = pool.submit(_invoke)
+                    try:
+                        result = future.result(timeout=timeout_seconds)
+                    except FuturesTimeoutError:
+                        timed_out = True
+                        failure = MatlabCallResult(
+                            success=False,
+                            error=f"MATLAB call timed out after {timeout_seconds:.1f}s: {request.function}",
+                        )
+                    finally:
+                        # shutdown(wait=False) avoids blocking indefinitely if MATLAB is hung
+                        pool.shutdown(wait=False)
                 else:
                     result = _invoke()
 
@@ -329,3 +332,19 @@ class MatlabBridge:
         req = MatlabCallRequest(function="eval", args=[cmd], nargout=0)
         result = self.call(req)
         return result.success and path.is_file()
+
+    def run_unittest(self, test_file_path: str | Path) -> tuple[bool, str]:
+        """
+        Programmatically invoke MATLAB's matlab.unittest.TestSuite for a specific file.
+        Returns a tuple of (success_boolean, console_output) to feed back to the LLM agent.
+        """
+        if not self.is_healthy():
+            return False, "MATLAB bridge is not available."
+            
+        path = Path(test_file_path).resolve()
+        matlab_path = str(path).replace("\\", "/").replace("'", "''")
+        
+        # We use evalc to capture the rich text output of the unit test runner,
+        # which provides excellent context for the LLM upon success/failure.
+        cmd = f"runtests('{matlab_path}')"
+        return self.run_matlab_code(cmd)

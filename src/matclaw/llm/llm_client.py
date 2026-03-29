@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Any, AsyncGenerator
 
 try:
     from anthropic import Anthropic
@@ -15,9 +15,10 @@ except ImportError:  # pragma: no cover
     genai = None  # type: ignore[assignment]
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI, AsyncOpenAI
 except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore[misc, assignment]
+    AsyncOpenAI = None  # type: ignore[misc, assignment]
 
 NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1"
 
@@ -30,7 +31,47 @@ def resolve_api_key(provider: str, api_key: str | None = None) -> str | None:
         return os.environ.get("NVIDIA_API_KEY")
     if p == "google":
         return os.environ.get("GOOGLE_API_KEY")
+    if p == "openai-compatible":
+        return None  # must be passed explicitly
     return os.environ.get("ANTHROPIC_API_KEY")
+
+
+import re as _re
+
+
+def _extract_code_from_reasoning(reasoning: str) -> str:
+    """
+    For reasoning models that spend all tokens thinking and produce no content,
+    extract the last coherent code block from the reasoning trace.
+    Looks for multi-line sequences that look like code (assignments, loops, function calls).
+    """
+    if not reasoning:
+        return ""
+    # Find all fenced code blocks first
+    fenced = _re.findall(r"```(?:matlab)?\s*\n(.*?)```", reasoning, _re.DOTALL | _re.IGNORECASE)
+    if fenced:
+        return fenced[-1].strip()
+    # Fall back: find the last run of lines that look like MATLAB code
+    # (contains assignment = , function calls, for/while/if, or semicolons)
+    lines = reasoning.split("\n")
+    code_lines: list[str] = []
+    best_block: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if (stripped and
+            not stripped.startswith("#") and
+            not stripped.startswith("//") and
+            (_re.search(r"[\w\.]+\s*=\s*", stripped) or
+             _re.search(r"\b(for|while|if|end|figure|plot|surf|mesh|subplot|xlabel|ylabel|title|drawnow|hold)\b", stripped) or
+             stripped.endswith(";"))):
+            code_lines.append(line)
+        else:
+            if len(code_lines) > len(best_block):
+                best_block = code_lines[:]
+            code_lines = []
+    if len(code_lines) > len(best_block):
+        best_block = code_lines
+    return "\n".join(best_block).strip()
 
 
 def call_chat_completion(
@@ -40,6 +81,7 @@ def call_chat_completion(
     system: str,
     messages: list[dict[str, Any]],
     api_key: str | None = None,
+    base_url: str | None = None,
     max_tokens: int = 1024,
     retries: int = 3,
     backoff_seconds: float = 0.6,
@@ -61,6 +103,39 @@ def call_chat_completion(
                 if OpenAI is None:
                     raise RuntimeError("openai package not installed.")
                 client = OpenAI(base_url=NVIDIA_API_BASE, api_key=key)
+                openai_messages = [{"role": "system", "content": system}]
+                openai_messages.extend(messages)
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=openai_messages,
+                    max_tokens=max_tokens,
+                )
+                content = (resp.choices[0].message.content if resp.choices else "") or ""
+                # For reasoning models: if content is empty, use reasoning trace
+                if not content.strip() and resp.choices:
+                    reasoning = getattr(resp.choices[0].message, "reasoning_content", None) or ""
+                    if reasoning:
+                        # First try to extract a JSON block (for structured responses)
+                        json_match = _re.search(r"\{[^{}]*\"reply\"[^{}]*\}", reasoning, _re.DOTALL)
+                        if json_match:
+                            content = json_match.group()
+                        else:
+                            # Try extracting code blocks
+                            code = _extract_code_from_reasoning(reasoning)
+                            if code:
+                                content = code
+                            else:
+                                # Last resort: return the last substantial paragraph
+                                paragraphs = [p.strip() for p in reasoning.split("\n\n") if p.strip()]
+                                content = paragraphs[-1] if paragraphs else reasoning
+                return content.strip()
+
+            if p == "openai-compatible":
+                if OpenAI is None:
+                    raise RuntimeError("openai package not installed.")
+                if not base_url:
+                    raise RuntimeError("base_url is required for openai-compatible provider.")
+                client = OpenAI(base_url=base_url, api_key=key)
                 openai_messages = [{"role": "system", "content": system}]
                 openai_messages.extend(messages)
                 resp = client.chat.completions.create(
@@ -104,4 +179,59 @@ def call_chat_completion(
     raise last_exc
 
 
-__all__ = ["call_chat_completion", "resolve_api_key", "NVIDIA_API_BASE"]
+async def call_chat_completion_stream(
+    *,
+    provider: str,
+    model: str,
+    system: str,
+    messages: list[dict[str, Any]],
+    api_key: str | None = None,
+    base_url: str | None = None,
+    max_tokens: int = 4096,
+) -> AsyncGenerator[dict[str, str], None]:
+    """
+    Async streaming variant — yields {"type": "thinking"|"text", "token": "..."} chunks.
+    Currently supports NVIDIA (OpenAI-compatible). Falls back to non-streaming for others.
+    """
+    key = resolve_api_key(provider, api_key)
+    if not key:
+        raise RuntimeError("Missing API key for provider.")
+    p = (provider or "").lower().strip()
+
+    if p in ("nvidia", "openai-compatible"):
+        if AsyncOpenAI is None:
+            raise RuntimeError("openai package not installed.")
+        stream_base = NVIDIA_API_BASE if p == "nvidia" else base_url
+        if p == "openai-compatible" and not stream_base:
+            raise RuntimeError("base_url is required for openai-compatible provider.")
+        client = AsyncOpenAI(base_url=stream_base, api_key=key)
+        openai_messages = [{"role": "system", "content": system}]
+        openai_messages.extend(messages)
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=openai_messages,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if not delta:
+                continue
+            reasoning_tok = getattr(delta, "reasoning_content", None)
+            if reasoning_tok:
+                yield {"type": "thinking", "token": reasoning_tok}
+            content_tok = getattr(delta, "content", None)
+            if content_tok:
+                yield {"type": "text", "token": content_tok}
+        return
+
+    # For non-OpenAI providers, fall back to sync call and yield as single chunk
+    result = call_chat_completion(
+        provider=provider, model=model, system=system,
+        messages=messages, api_key=api_key, base_url=base_url, max_tokens=max_tokens,
+    )
+    if result:
+        yield {"type": "text", "token": result}
+
+
+__all__ = ["call_chat_completion", "call_chat_completion_stream", "resolve_api_key", "NVIDIA_API_BASE"]
