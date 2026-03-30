@@ -24,6 +24,7 @@ import ThinkingBlock from '../components/ThinkingBlock'
 import TerminalTab from '../components/TerminalTab'
 import AgentsTab from './Agents'
 import CodeEditor from '../components/CodeEditor'
+import PipelineCanvas from '../components/PipelineCanvas'
 
 const API = 'http://localhost:8000'
 
@@ -188,6 +189,7 @@ export default function ControlPlane() {
     setWorkspaceTab(tab)
     if (tab === 'settings') setActivityTab('settings')
     else if (tab === 'agents') setActivityTab('agents')
+    else if (tab === 'pipeline') setActivityTab('chat')
     else setActivityTab('chat')
   }
 
@@ -489,6 +491,8 @@ export default function ControlPlane() {
           <SettingsPanel />
         ) : workspaceTab === 'agents' ? (
           <AgentsTab />
+        ) : workspaceTab === 'pipeline' ? (
+          <PipelineCanvas />
         ) : workspaceTab === 'terminal' ? (
           <TerminalTab />
         ) : workspaceTab === 'editor' ? (

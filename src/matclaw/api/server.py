@@ -48,6 +48,8 @@ from src.matclaw.core.static_analyzer import StaticAnalyzer
 from src.matclaw.memory.episodic_memory import EpisodicMemoryManager, Episode
 from src.matclaw.core.state_manager import AsyncStateTracker, ExecutionState
 from src.matclaw.memory.session_store import SessionStore
+from src.matclaw.core.pipeline_store import PipelineStore
+from src.matclaw.core.task_router import TaskRouter, pipeline_to_dag_plan
 
 import uuid
 from datetime import datetime
@@ -64,6 +66,8 @@ analyzer = StaticAnalyzer(bridge)
 episodic_memory = EpisodicMemoryManager(str(ROOT / ".matclaw_episodic.sqlite3"))
 state_tracker = AsyncStateTracker(str(ROOT / ".matclaw_async_state.json"))
 session_store = SessionStore(str(ROOT / ".matclaw_sessions.sqlite3"))
+pipeline_store = PipelineStore(str(ROOT / ".matclaw_pipelines.sqlite3"))
+_active_runs: dict[str, asyncio.Queue] = {}  # run_id → SSE event queue
 
 import json
 
@@ -599,6 +603,189 @@ async def optimize_prompt(req: OptimizePromptReq):
     except Exception as e:
         logger.error("Prompt optimization failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Pipeline endpoints ───────────────────────────────────────────────────────
+
+class PipelineValidateReq(BaseModel):
+    nodes: list = []
+    edges: list = []
+
+@app.get("/api/pipelines")
+def list_pipelines_endpoint():
+    return pipeline_store.list_pipelines()
+
+@app.post("/api/pipelines")
+def upsert_pipeline_endpoint(body: dict):
+    return pipeline_store.upsert_pipeline(body)
+
+@app.get("/api/pipelines/{pipeline_id}")
+def get_pipeline_endpoint(pipeline_id: str):
+    p = pipeline_store.get_pipeline(pipeline_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return p
+
+@app.delete("/api/pipelines/{pipeline_id}")
+def delete_pipeline_endpoint(pipeline_id: str):
+    if not pipeline_store.delete_pipeline(pipeline_id):
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return {"ok": True}
+
+@app.post("/api/pipelines/validate")
+def validate_pipeline_endpoint(body: dict):
+    router = TaskRouter()
+    valid, error = router.validate_pipeline(body)
+    return {"valid": valid, "error": error}
+
+@app.post("/api/pipelines/{pipeline_id}/run")
+async def run_pipeline_endpoint(pipeline_id: str):
+    pipeline = pipeline_store.get_pipeline(pipeline_id)
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    run_id = pipeline_store.create_run(pipeline_id)
+    queue: asyncio.Queue = asyncio.Queue()
+    _active_runs[run_id] = queue
+
+    async def _execute():
+        try:
+            router = TaskRouter()
+            dag = pipeline_to_dag_plan(pipeline)
+            router.build_dag(dag)
+            try:
+                order = router.get_execution_order()
+            except ValueError as e:
+                await queue.put(_sse("pipeline_error", {"error": str(e)}))
+                await queue.put(None)
+                pipeline_store.update_run(run_id, "failed", {"error": str(e)})
+                return
+
+            await queue.put(_sse("pipeline_start", {"run_id": run_id, "total_nodes": len(order)}))
+
+            node_results: dict[str, str] = {}
+
+            for node_id in order:
+                node = router.nodes[node_id]
+                agent_def = None
+                if node.agent_id:
+                    try:
+                        agent_def = AgentRegistry().get_agent(node.agent_id)
+                    except Exception:
+                        pass
+
+                agent_system = agent_def.system_prompt if agent_def else MATCLAW_PERSONA
+                task_text = node.execution_payload.get("task", node.description)
+                node_tool = node.execution_payload.get("tool", "")
+                node_code = (node.execution_payload.get("code") or "").strip()
+
+                # Inject upstream context
+                upstream_ctx = ""
+                for inp in node.inputs:
+                    for prev_id, prev_out in node_results.items():
+                        prev_node = router.nodes.get(prev_id)
+                        if prev_node and inp in prev_node.outputs:
+                            upstream_ctx += f"\n\nOutput from upstream node '{prev_id}':\n{prev_out}"
+                if upstream_ctx:
+                    task_text = task_text + upstream_ctx
+
+                await queue.put(_sse("node_start", {"node_id": node_id, "label": node.description, "agent_id": node.agent_id or ""}))
+                router.mark_status(node_id, "running")
+
+                try:
+                    agent_result = ""
+                    node_plots: list[str] = []
+
+                    if node_tool == "run_matlab" and node_code:
+                        # Path A: direct execution
+                        exec_output, node_plots = await asyncio.to_thread(_run_matlab_and_collect, node_code, task_text)
+                        agent_result = exec_output
+                    elif node_tool == "run_matlab":
+                        # Path B: LLM generates then executes
+                        raw = await asyncio.to_thread(
+                            call_chat_completion,
+                            provider=settings.llm.provider,
+                            model=settings.llm.model,
+                            system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
+                            messages=[{"role": "user", "content": task_text}],
+                            api_key=settings.llm.api_key,
+                        )
+                        code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+                        generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
+                        if generated_code:
+                            exec_output, node_plots = await asyncio.to_thread(_run_matlab_and_collect, generated_code, task_text)
+                            agent_result = exec_output
+                        else:
+                            agent_result = raw
+                    else:
+                        # Path C: LLM text only
+                        agent_result = await asyncio.to_thread(
+                            call_chat_completion,
+                            provider=settings.llm.provider,
+                            model=settings.llm.model,
+                            system=agent_system,
+                            messages=[{"role": "user", "content": task_text}],
+                            api_key=settings.llm.api_key,
+                        )
+
+                    node_results[node_id] = agent_result
+                    router.mark_status(node_id, "completed", agent_result)
+                    await queue.put(_sse("node_complete", {
+                        "node_id": node_id,
+                        "output": agent_result[:2000],
+                        "plots": node_plots,
+                    }))
+
+                except Exception as exc:
+                    router.mark_status(node_id, "failed")
+                    await queue.put(_sse("node_failed", {"node_id": node_id, "error": str(exc)}))
+
+            await queue.put(_sse("pipeline_complete", {"run_id": run_id}))
+            pipeline_store.update_run(run_id, "completed", {"node_results": node_results})
+
+        except Exception as exc:
+            await queue.put(_sse("pipeline_error", {"error": str(exc)}))
+            pipeline_store.update_run(run_id, "failed", {"error": str(exc)})
+        finally:
+            await queue.put(None)  # sentinel
+            _active_runs.pop(run_id, None)
+
+    asyncio.create_task(_execute())
+    return {"run_id": run_id}
+
+@app.get("/api/pipelines/runs/{run_id}/stream")
+async def stream_pipeline_run(run_id: str):
+    queue = _active_runs.get(run_id)
+    if not queue:
+        run = pipeline_store.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        # Already finished — return status as a single SSE event
+        async def _done():
+            yield _sse("pipeline_complete", {"run_id": run_id, "status": run["status"]})
+        return StreamingResponse(_done(), media_type="text/event-stream")
+
+    async def _stream():
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+@app.delete("/api/pipelines/runs/{run_id}")
+async def cancel_pipeline_run(run_id: str):
+    queue = _active_runs.pop(run_id, None)
+    if queue:
+        await queue.put(_sse("pipeline_error", {"error": "Cancelled by user"}))
+        await queue.put(None)
+    pipeline_store.update_run(run_id, "cancelled")
+    return {"ok": True}
+
+@app.get("/api/pipelines/{pipeline_id}/runs")
+def list_pipeline_runs(pipeline_id: str):
+    return pipeline_store.list_runs_for_pipeline(pipeline_id)
 
 
 # ── Model Manager ────────────────────────────────────────────────────────────

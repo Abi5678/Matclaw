@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from src.matclaw.agents.registry import AgentRegistry
@@ -97,3 +98,62 @@ class TaskRouter:
             if result is not None:
                 self.nodes[node_id].result = result
             logger.info(f"Node '{node_id}' updated to status: {status}")
+
+    def validate_pipeline(self, pipeline: dict) -> tuple[bool, str | None]:
+        """
+        Validate a pipeline dict for cycle-freedom and known agent IDs.
+        Returns (is_valid, error_message).
+        """
+        try:
+            dag = pipeline_to_dag_plan(pipeline)
+            self.build_dag(dag)
+            self.get_execution_order()
+            return True, None
+        except ValueError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, f"Validation error: {e}"
+
+
+# ── Module-level helpers ───────────────────────────────────────────────────
+
+
+def pipeline_to_dag_plan(pipeline: dict) -> "DAGPlan":
+    """
+    Convert a visual pipeline dict (from the frontend canvas) into a DAGPlan
+    that TaskRouter.build_dag() can consume.
+
+    The pipeline format:
+        {
+          "nodes": [{"id": "n1", "agent_id": "...", "config": {"task_description": "...", "tool": "run_matlab", "code": "..."}}],
+          "edges": [{"id": "e1", "source": "n1", "target": "n2", "source_handle": "data", "target_handle": "data"}]
+        }
+    """
+    nodes_by_id = {n["id"]: n for n in pipeline.get("nodes", [])}
+    edges = pipeline.get("edges", [])
+
+    task_nodes: List[TaskNode] = []
+    for n in pipeline.get("nodes", []):
+        node_id = n["id"]
+        # Inputs: handles on edges whose target == this node
+        inputs = [e.get("source_handle", "data") for e in edges if e["target"] == node_id]
+        # Outputs: handles on edges whose source == this node
+        outputs = [e.get("source_handle", "data") for e in edges if e["source"] == node_id]
+
+        cfg = n.get("config", {})
+        task_nodes.append(
+            TaskNode(
+                id=node_id,
+                description=cfg.get("task_description", n.get("label", node_id)),
+                inputs=inputs,
+                outputs=outputs,
+                agent_id=n.get("agent_id"),
+                execution_payload={
+                    "tool": cfg.get("tool", ""),
+                    "code": cfg.get("code", ""),
+                    "task": cfg.get("task_description", n.get("label", "")),
+                },
+            )
+        )
+
+    return DAGPlan(nodes=task_nodes)

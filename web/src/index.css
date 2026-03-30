@@ -212,6 +212,32 @@ code { font-family: var(--font-mono); }
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
+/* ── React Flow (Pipeline Canvas) theme overrides ─────────────────────────── */
+.react-flow {
+  --xy-background-color: var(--bg-base);
+  --xy-background-pattern-color: var(--border-subtle);
+  --xy-node-border-color: var(--border-default);
+  --xy-node-background-color: var(--bg-elevated);
+  --xy-node-color: var(--text-primary);
+  --xy-edge-stroke: var(--accent);
+  --xy-edge-stroke-width: 2;
+  --xy-handle-background-color: var(--accent);
+  --xy-handle-border-color: var(--bg-base);
+  --xy-selection-background-color: rgba(0,212,170,0.05);
+  --xy-selection-border-color: var(--accent);
+  --xy-controls-button-background-color: var(--bg-elevated);
+  --xy-controls-button-color: var(--text-secondary);
+  --xy-controls-button-border-color: var(--border-default);
+  --xy-minimap-background-color: var(--bg-surface);
+  --xy-minimap-mask-background-color: rgba(0,0,0,0.4);
+  --xy-minimap-node-background-color: var(--bg-elevated);
+}
+.react-flow__background { background-color: var(--bg-base); }
+.react-flow__controls { box-shadow: none; border: 1px solid var(--border-default); border-radius: 10px; overflow: hidden; }
+.react-flow__controls-button { border: none; border-bottom: 1px solid var(--border-subtle); }
+.react-flow__controls-button:last-child { border-bottom: none; }
+.react-flow__minimap { border: 1px solid var(--border-default); border-radius: 10px; overflow: hidden; }
+
 /* ── Theme transition on interactive elements ─────────────────────────────── */
 .theme-transition,
 header, aside, nav, main, section {
