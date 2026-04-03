@@ -1,0 +1,12 @@
+Testing /api/run (Long Horizon Debug)...
+Status: 200
+{
+  "skill": "run_matlab",
+  "output": "Alright, let's get that PID controller fixed and see the step response in action! **First, I'll analyze 'broken_pid.m' for syntax errors** \u2014 typos can be sneaky. Once fixed, we'll run it to generate the plot. Oh nice, this is going to look great! Let me share the corrected code and the resulting plot. Building on that surface plot from earlier... actually, scratch that, this is a whole new visualization. Let me execute the corrected script now.",
+  "plots": [
+    "/plots/plot_1774753362.png"
+  ],
+  "metrics": {},
+  "elapsed_ms": 12410,
+  "files": []
+}

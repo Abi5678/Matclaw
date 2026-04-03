@@ -1,0 +1,20 @@
+[
+  {
+    "id": "670a34f1-2bbb-4e18-a40e-4b7c87581769",
+    "provider": "openai-compatible",
+    "model": "gpt-4o",
+    "api_key": "sk-test-key-2",
+    "base_url": "https://api.openai.com/v1",
+    "label": "GPT-4o",
+    "active": false
+  },
+  {
+    "id": "5b713eab-f225-458a-a23c-704bfa4d33a7",
+    "provider": "nvidia",
+    "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    "api_key": "",
+    "base_url": null,
+    "label": "Nemotron Ultra",
+    "active": true
+  }
+]

@@ -41,16 +41,5 @@
             "edit_file",
             "run_command"
         ]
-    },
-    {
-        "id": "a-matlab-unit-testing-specialist-that-wr",
-        "name": "A MATLAB unit testing specialist that writes matlab.unittest",
-        "system_prompt": "- **Core Role:** Automatically generate comprehensive MATLAB unit test suites using the matlab.unittest framework for given MATLAB code.",
-        "trigger_condition": "When the task requires a matlab unit testing specialist that writes matlab.unittest test suites.",
-        "callable_by_others": true,
-        "allowed_tools": [
-            "run_matlab",
-            "read_file"
-        ]
     }
 ]

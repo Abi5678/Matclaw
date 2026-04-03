@@ -234,4 +234,168 @@ async def call_chat_completion_stream(
         yield {"type": "text", "token": result}
 
 
-__all__ = ["call_chat_completion", "call_chat_completion_stream", "resolve_api_key", "NVIDIA_API_BASE"]
+async def call_chat_with_tools(
+    *,
+    provider: str,
+    model: str,
+    system: str,
+    messages: list[dict[str, Any]],   # OpenAI-normalized history (see note below)
+    tools: list[dict[str, Any]],       # OpenAI function-calling schema
+    api_key: str | None = None,
+    base_url: str | None = None,
+    max_tokens: int = 4096,
+) -> dict[str, Any]:
+    """
+    Call LLM with tool definitions.  Returns a unified dict:
+      {
+        "text":       str,            # any prose the model produced (may be empty)
+        "tool_calls": [               # list may be empty when model is just replying
+          {"id": str, "name": str, "inputs": dict}
+        ]
+      }
+
+    Internal history is kept in OpenAI wire format.
+    For Anthropic we convert on the fly before the API call.
+
+    Supported providers:  nvidia, openai-compatible, anthropic
+    Google: no function-calling support yet — falls back to plain text.
+    """
+    key = resolve_api_key(provider, api_key)
+    if not key:
+        raise RuntimeError("Missing API key for provider.")
+    p = (provider or "").lower().strip()
+
+    # ── Anthropic ────────────────────────────────────────────────────────────
+    if p == "anthropic":
+        if Anthropic is None:
+            raise RuntimeError("anthropic package not installed.")
+
+        def _to_anthropic_tools(oai_tools: list[dict]) -> list[dict]:
+            """Convert OpenAI tool schema → Anthropic tool schema."""
+            out = []
+            for t in oai_tools:
+                fn = t.get("function", t)
+                out.append({
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+                })
+            return out
+
+        def _to_anthropic_messages(msgs: list[dict]) -> list[dict]:
+            """Convert OpenAI-format history → Anthropic message list."""
+            result: list[dict] = []
+            i = 0
+            while i < len(msgs):
+                m = msgs[i]
+                role = m.get("role", "user")
+
+                if role == "system":
+                    i += 1
+                    continue  # system handled separately
+
+                if role == "assistant":
+                    content: list[dict] | str = []
+                    text_part = m.get("content") or ""
+                    if text_part:
+                        content.append({"type": "text", "text": text_part})  # type: ignore[union-attr]
+                    for tc in m.get("tool_calls", []):
+                        fn = tc.get("function", {})
+                        import json as _json
+                        raw_args = fn.get("arguments", "{}")
+                        try:
+                            inp = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        except Exception:
+                            inp = {"raw": raw_args}
+                        content.append({  # type: ignore[union-attr]
+                            "type": "tool_use",
+                            "id": tc.get("id", f"call_{i}"),
+                            "name": fn.get("name", "unknown"),
+                            "input": inp,
+                        })
+                    result.append({"role": "assistant", "content": content or text_part})
+                    i += 1
+
+                elif role == "tool":
+                    # Collect consecutive tool results into a single user message
+                    tool_results = []
+                    while i < len(msgs) and msgs[i].get("role") == "tool":
+                        tr = msgs[i]
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tr.get("tool_call_id", ""),
+                            "content": str(tr.get("content", "")),
+                        })
+                        i += 1
+                    result.append({"role": "user", "content": tool_results})
+
+                else:
+                    result.append({"role": "user", "content": m.get("content", "")})
+                    i += 1
+            return result
+
+        client = Anthropic(api_key=key)
+        anthropic_tools = _to_anthropic_tools(tools)
+        anthropic_msgs  = _to_anthropic_messages(messages)
+
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=anthropic_msgs,
+            tools=anthropic_tools,
+            tool_choice={"type": "auto"},
+        )
+
+        text = ""
+        tool_calls = []
+        for block in resp.content:
+            if hasattr(block, "text"):
+                text += block.text
+            elif block.type == "tool_use":
+                tool_calls.append({
+                    "id": block.id,
+                    "name": block.name,
+                    "inputs": block.input or {},
+                })
+        return {"text": text.strip(), "tool_calls": tool_calls}
+
+    # ── NVIDIA / OpenAI-compatible ────────────────────────────────────────────
+    if p in ("nvidia", "openai-compatible"):
+        if OpenAI is None:
+            raise RuntimeError("openai package not installed.")
+        import json as _json
+        stream_base = NVIDIA_API_BASE if p == "nvidia" else base_url
+        if p == "openai-compatible" and not stream_base:
+            raise RuntimeError("base_url required for openai-compatible provider.")
+        client = OpenAI(base_url=stream_base, api_key=key)
+        openai_messages = [{"role": "system", "content": system}, *messages]
+        resp = client.chat.completions.create(
+            model=model,
+            messages=openai_messages,
+            tools=tools,
+            tool_choice="auto",
+            max_tokens=max_tokens,
+        )
+        msg = resp.choices[0].message if resp.choices else None
+        text = (msg.content or "") if msg else ""
+        tool_calls = []
+        for tc in (getattr(msg, "tool_calls", None) or []):
+            raw = tc.function.arguments or "{}"
+            try:
+                inp = _json.loads(raw)
+            except Exception:
+                inp = {"raw": raw}
+            tool_calls.append({"id": tc.id, "name": tc.function.name, "inputs": inp})
+        return {"text": text.strip(), "tool_calls": tool_calls}
+
+    # ── Google / fallback: no tool support ───────────────────────────────────
+    result = call_chat_completion(
+        provider=provider, model=model, system=system,
+        messages=messages, api_key=api_key, base_url=base_url, max_tokens=max_tokens,
+    )
+    return {"text": result, "tool_calls": []}
+
+
+__all__ = ["call_chat_completion", "call_chat_completion_stream",
+           "call_chat_with_tools", "resolve_api_key", "NVIDIA_API_BASE"]

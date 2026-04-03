@@ -37,8 +37,13 @@ const TOOL_OPTIONS = [
 ]
 
 // ── Custom AgentNode ─────────────────────────────────────────────────────────
-function AgentNode({ data, selected }: NodeProps) {
-  const status = (data.status as string) || 'pending'
+interface AgentNodeData {
+  agentId?: string; label?: string; tool?: string; taskDescription?: string
+  status?: string; error?: string; output?: string; onDelete?: (id: string) => void; nodeId?: string
+}
+function AgentNode({ data: rawData, selected }: NodeProps) {
+  const data = rawData as AgentNodeData
+  const status = data.status || 'pending'
   const statusColors: Record<string, string> = {
     running:   'var(--accent)',
     completed: '#22c55e',
@@ -61,6 +66,7 @@ function AgentNode({ data, selected }: NodeProps) {
         transition: 'border-color 0.2s, box-shadow 0.2s',
         position: 'relative',
       }}
+      className="group/node"
     >
       <Handle
         type="target"
@@ -68,8 +74,27 @@ function AgentNode({ data, selected }: NodeProps) {
         style={{ background: 'var(--accent)', width: 10, height: 10, border: '2px solid var(--bg-base)' }}
       />
 
+      {/* Delete button — visible on hover */}
+      <button
+        onClick={(e) => { e.stopPropagation(); data.onDelete?.(data.nodeId ?? '') }}
+        className="nodrag"
+        style={{
+          position: 'absolute', top: 6, right: 6,
+          width: 18, height: 18, borderRadius: 4,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
+          color: '#ef4444', cursor: 'pointer', opacity: 0, transition: 'opacity 0.15s',
+        }}
+        onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+        onMouseLeave={e => (e.currentTarget.style.opacity = '0')}
+        onMouseOver={e => (e.currentTarget.style.opacity = '1')}
+        title="Remove node"
+      >
+        <XCircle style={{ width: 11, height: 11 }} />
+      </button>
+
       {/* Status indicator */}
-      <div style={{ position: 'absolute', top: 8, right: 10 }}>
+      <div style={{ position: 'absolute', top: 8, right: 30 }}>
         {status === 'running' && <Loader style={{ width: 12, height: 12, color: 'var(--accent)', animation: 'spin 1s linear infinite' }} />}
         {status === 'completed' && <CheckCircle style={{ width: 12, height: 12, color: '#22c55e' }} />}
         {status === 'failed' && <XCircle style={{ width: 12, height: 12, color: '#ef4444' }} />}
@@ -83,12 +108,12 @@ function AgentNode({ data, selected }: NodeProps) {
           <Bot style={{ width: 13, height: 13, color: 'var(--accent)' }} />
         </div>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-          {(data.agentId as string) || 'Agent'}
+          {data.agentId || 'Agent'}
         </span>
       </div>
 
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4, lineHeight: 1.3 }}>
-        {(data.label as string) || 'Untitled Node'}
+        {data.label || 'Untitled Node'}
       </div>
 
       {data.tool && (
@@ -97,13 +122,13 @@ function AgentNode({ data, selected }: NodeProps) {
           borderRadius: 999, backgroundColor: 'rgba(0,212,170,0.1)', color: 'var(--accent)',
           border: '1px solid rgba(0,212,170,0.2)',
         }}>
-          {data.tool as string}
+          {data.tool}
         </div>
       )}
 
       {status === 'failed' && data.error && (
         <div style={{ fontSize: 11, color: '#ef4444', marginTop: 6, lineHeight: 1.4 }}>
-          {(data.error as string).slice(0, 80)}
+          {data.error.slice(0, 80)}
         </div>
       )}
 
@@ -128,7 +153,7 @@ function NodeInspector({
 }: {
   node: Node | null
   agents: Agent[]
-  status?: { output?: string; error?: string }
+  status?: { output?: string; error?: string; plots?: string[] }
   onChange: (id: string, data: Partial<PipelineNodeConfig & { label: string; agent_id: string }>) => void
   onDelete: (id: string) => void
 }) {
@@ -249,6 +274,35 @@ function NodeInspector({
             </div>
           </div>
         )}
+
+        {/* Plots */}
+        {status?.plots && status.plots.length > 0 && (
+          <div>
+            <label style={labelStyle}>Plots</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {status.plots.map((plotPath, i) => (
+                <a
+                  key={i}
+                  href={`http://localhost:8000${plotPath}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Click to open full size"
+                >
+                  <img
+                    src={`http://localhost:8000${plotPath}`}
+                    alt={`Plot ${i + 1}`}
+                    style={{
+                      width: '100%', borderRadius: 8,
+                      border: '1px solid var(--border-subtle)',
+                      display: 'block', cursor: 'pointer',
+                    }}
+                    onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                  />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -321,6 +375,8 @@ export default function PipelineCanvas() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const validateTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Use a ref so AgentNode's delete button always calls the latest version
+  const deleteNodeRef = useRef<(id: string) => void>(() => {})
 
   const stream = usePipelineStream()
 
@@ -339,7 +395,6 @@ export default function PipelineCanvas() {
 
   // Update node statuses from stream
   useEffect(() => {
-    if (!stream.nodeStatuses) return
     setNodes(nds => nds.map(n => ({
       ...n,
       data: {
@@ -405,6 +460,8 @@ export default function PipelineCanvas() {
       type: 'agentNode',
       position,
       data: {
+        nodeId: id,
+        onDelete: (id: string) => deleteNodeRef.current(id),
         label: agent.name,
         agentId: agent.id,
         tool: agent.allowed_tools?.[0] || '',
@@ -439,6 +496,9 @@ export default function PipelineCanvas() {
     setEdges(eds => eds.filter(e => e.source !== nodeId && e.target !== nodeId))
     setSelectedNode(null)
   }, [setNodes, setEdges])
+
+  // Keep the ref up to date so AgentNode always calls the latest function
+  deleteNodeRef.current = handleDeleteNode
 
   const handleSave = async () => {
     setSaveStatus('saving')
@@ -479,6 +539,8 @@ export default function PipelineCanvas() {
       type: 'agentNode',
       position: n.position,
       data: {
+        nodeId: n.id,
+        onDelete: (id: string) => deleteNodeRef.current(id),
         label: n.label,
         agentId: n.agent_id,
         tool: n.config.tool,

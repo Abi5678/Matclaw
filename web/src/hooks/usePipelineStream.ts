@@ -37,55 +37,8 @@ export function usePipelineStream() {
     })
   }, [])
 
-  const startStream = useCallback(async (runId: string) => {
-    reset()
-    setState(s => ({ ...s, isRunning: true, runId }))
-
-    abortRef.current = new AbortController()
-    const decoder = new TextDecoder()
-
-    try {
-      const res = await fetch(`${API}/api/pipelines/runs/${runId}/stream`, {
-        signal: abortRef.current.signal,
-      })
-      if (!res.body) throw new Error('No response body')
-
-      readerRef.current = res.body.getReader()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await readerRef.current.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const payload = JSON.parse(line.slice(6))
-            handleEvent(payload)
-          } catch {
-            // ignore malformed lines
-          }
-        }
-      }
-    } catch (err: unknown) {
-      if ((err as Error).name !== 'AbortError') {
-        setState(s => ({ ...s, error: (err as Error).message, isRunning: false }))
-      }
-    } finally {
-      setState(s => ({ ...s, isRunning: false }))
-    }
-  }, [reset])
-
-  const handleEvent = (payload: Record<string, unknown>) => {
-    const type = payload.type as string
-    const data = payload.data as Record<string, unknown>
-    if (!data) return
-
-    switch (type) {
+  const handleEvent = useCallback((eventType: string, data: Record<string, unknown>) => {
+    switch (eventType) {
       case 'pipeline_start':
         setState(s => ({ ...s, totalNodes: (data.total_nodes as number) || 0 }))
         break
@@ -138,7 +91,66 @@ export function usePipelineStream() {
         setState(s => ({ ...s, isRunning: false, error: data.error as string }))
         break
     }
-  }
+  }, [])
+
+  const startStream = useCallback(async (runId: string) => {
+    reset()
+    setState(s => ({ ...s, isRunning: true, runId }))
+
+    abortRef.current = new AbortController()
+    const decoder = new TextDecoder()
+
+    try {
+      const res = await fetch(`${API}/api/pipelines/runs/${runId}/stream`, {
+        signal: abortRef.current.signal,
+      })
+      if (!res.body) throw new Error('No response body')
+
+      readerRef.current = res.body.getReader()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await readerRef.current.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        // SSE format: "event: <type>\ndata: <json>\n\n"
+        // Split on double newline to get complete events
+        const events = buffer.split('\n\n')
+        buffer = events.pop() ?? '' // keep incomplete trailing chunk
+
+        for (const eventBlock of events) {
+          const lines = eventBlock.split('\n')
+          let eventType = ''
+          let dataLine = ''
+
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim()
+            } else if (line.startsWith('data: ')) {
+              dataLine = line.slice(6).trim()
+            }
+          }
+
+          if (eventType && dataLine) {
+            try {
+              const data = JSON.parse(dataLine)
+              handleEvent(eventType, data)
+            } catch {
+              // ignore malformed JSON
+            }
+          }
+        }
+      }
+    } catch (err: unknown) {
+      if ((err as Error).name !== 'AbortError') {
+        setState(s => ({ ...s, error: (err as Error).message, isRunning: false }))
+      }
+    } finally {
+      setState(s => ({ ...s, isRunning: false }))
+    }
+  }, [reset, handleEvent])
 
   const cancel = useCallback(async () => {
     abortRef.current?.abort()

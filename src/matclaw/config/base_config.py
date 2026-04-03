@@ -162,6 +162,14 @@ class SyncSettings(BaseModel):
     cloud_path: str = Field(default="")
 
 
+class AgenticSettings(BaseModel):
+    """Autonomous agentic loop — iterative tool-use with observe-think-act cycle."""
+
+    enabled: bool = Field(default=True, description="Whether agentic mode is available.")
+    max_iterations: int = Field(default=10, description="Max tool-call iterations per request.")
+    max_tokens_per_step: int = Field(default=4096, description="Max tokens per LLM call in the loop.")
+
+
 class MatClawSettings(BaseSettings):
     """
     Typed application configuration, loaded from environment variables where present.
@@ -182,6 +190,7 @@ class MatClawSettings(BaseSettings):
     file_doctor: FileDoctorSettings = Field(default_factory=FileDoctorSettings)
     long_term_memory: LongTermMemorySettings = Field(default_factory=LongTermMemorySettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
+    agentic: AgenticSettings = Field(default_factory=AgenticSettings)
 
     class Config:
         env_prefix = "MATCLAW_"

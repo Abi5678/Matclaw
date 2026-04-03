@@ -17,8 +17,9 @@ interface FlowDashboardProps {
 /**
  * Derive RPI-style task phases from SSE streaming state.
  * Maps streamingPhase → Research/Plan/Execute/Complete phases.
+ * Exported so ControlPlane can use it for inline step strips.
  */
-function derivePhases(msg: Message | null, toolLabel?: string): TaskPhase[] {
+export function derivePhases(msg: Message | null, toolLabel?: string): TaskPhase[] {
   if (!msg || msg.role !== 'assistant') return []
 
   const phase = msg.streamingPhase as StreamingPhase

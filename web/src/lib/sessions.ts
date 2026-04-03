@@ -75,6 +75,32 @@ export interface Message {
   metrics?: Record<string, unknown>
   elapsed_ms?: number
   files?: ProjectFile[]
+  code?: string          // raw MATLAB/Python/Shell code that was executed
+  codeFilename?: string  // generated filename for editor tab (e.g. "matlab_1748.m")
+  sentryStatus?: {
+    type: 'checking' | 'issue' | 'retrying' | 'done'
+    message: string
+    quality?: 'good' | 'poor'
+    attempt?: number
+    issues?: string[]
+  }
+  agentSteps?: Array<{
+    step: number
+    tool: string
+    label: string
+    status: 'running' | 'done' | 'error'
+    output?: string
+    plots?: string[]
+  }>
+  doctorLog?: Array<{
+    type: 'start' | 'issue' | 'fix' | 'rerun' | 'done'
+    round?: number
+    severity?: string
+    issueType?: string
+    description?: string
+    message?: string
+    fixed?: boolean
+  }>
   ts: number
 }
 

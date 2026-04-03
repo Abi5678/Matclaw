@@ -174,7 +174,7 @@ export default function AgentsTab() {
             <div
               key={agent.id}
               onClick={() => handleSelect(agent)}
-              className="flex items-center gap-3 p-2 rounded cursor-pointer transition select-none"
+              className="flex items-center gap-3 p-2 rounded cursor-pointer transition select-none group"
               style={{
                 backgroundColor: selectedId === agent.id ? 'var(--bg-active)' : 'transparent',
               }}
@@ -188,7 +188,7 @@ export default function AgentsTab() {
               }}
             >
               <div
-                className="w-8 h-8 rounded flex items-center justify-center"
+                className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0"
                 style={{ backgroundColor: 'var(--accent-subtle)', color: 'var(--accent)' }}
               >
                 <Bot className="w-4 h-4" />
@@ -196,6 +196,16 @@ export default function AgentsTab() {
               <div className="flex-1 truncate text-sm" style={{ color: 'var(--text-primary)' }}>
                 {agent.name}
               </div>
+              <button
+                onClick={e => { e.stopPropagation(); handleDelete(agent.id) }}
+                className="opacity-0 group-hover:opacity-100 p-1 rounded transition-all flex-shrink-0"
+                title="Delete agent"
+                style={{ color: 'var(--text-muted)' }}
+                onMouseEnter={e => { e.currentTarget.style.color = 'var(--error, #ef4444)'; e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)' }}
+                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.backgroundColor = 'transparent' }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
             </div>
           ))}
         </div>

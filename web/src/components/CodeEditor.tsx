@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { Play, Save, FileCode2, Plus, X } from 'lucide-react'
 import type { ProjectFile } from '../lib/sessions'
@@ -29,6 +29,19 @@ export default function CodeEditor({ files = [], onRunMatlab }: CodeEditorProps)
   const [running, setRunning] = useState(false)
 
   const currentTab = tabs.find(t => t.file.filename === activeTab) ?? null
+
+  // ── sync new files added dynamically from outside (e.g. "Open in Editor") ─
+  useEffect(() => {
+    if (!files.length) return
+    setTabs(prev => {
+      const existing = new Set(prev.map(t => t.file.filename))
+      const added = files.filter(f => !existing.has(f.filename))
+      if (!added.length) return prev
+      return [...prev, ...added.map(f => ({ file: f, content: f.content, dirty: false }))]
+    })
+    // Auto-focus the last added file
+    setActiveTab(files[files.length - 1].filename)
+  }, [files])
 
   // ── close a tab ─────────────────────────────────────────────────────────
   const closeTab = useCallback((filename: string, e: React.MouseEvent) => {

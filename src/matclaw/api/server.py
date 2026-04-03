@@ -50,9 +50,20 @@ from src.matclaw.core.state_manager import AsyncStateTracker, ExecutionState
 from src.matclaw.memory.session_store import SessionStore
 from src.matclaw.core.pipeline_store import PipelineStore
 from src.matclaw.core.task_router import TaskRouter, pipeline_to_dag_plan
+from src.matclaw.core.runtimes import RuntimeRegistry, MatlabRuntime, PythonRuntime, ShellRuntime
+from src.matclaw.core.scheduler import Scheduler, ScheduledTask
+from src.matclaw.core.heartbeat import Heartbeat
+from src.matclaw.core.job_manager import JobManager
+from src.matclaw.api.auth import APIKeyStore
+from src.matclaw.api.middleware import EnterpriseMiddleware, MetricsStore
+from src.matclaw.tools.registry import tool_registry
+from src.matclaw.core.agentic_loop import run_agentic_loop
+from src.matclaw.core.code_doctor import run_code_doctor
+from src.matclaw.gateways.webhook import WebhookRequest, WebhookResponse
 
 import uuid
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +79,22 @@ state_tracker = AsyncStateTracker(str(ROOT / ".matclaw_async_state.json"))
 session_store = SessionStore(str(ROOT / ".matclaw_sessions.sqlite3"))
 pipeline_store = PipelineStore(str(ROOT / ".matclaw_pipelines.sqlite3"))
 _active_runs: dict[str, asyncio.Queue] = {}  # run_id → SSE event queue
+
+# ── Enterprise singletons ────────────────────────────────────────────────────
+_key_store = APIKeyStore(str(ROOT / ".matclaw_auth.sqlite3"))
+_metrics = MetricsStore()
+_job_manager = JobManager(concurrency=2)
+
+# Runtime registry — populated after MATLAB bridge starts (see startup below)
+_runtime_registry = RuntimeRegistry()
+
+_scheduler = Scheduler(
+    db_path=str(ROOT / ".matclaw_scheduler.sqlite3"),
+    job_manager=_job_manager,
+    runtime_registry=_runtime_registry,
+    heartbeat_seconds=settings.daemon.heartbeat_interval_seconds,
+)
+_heartbeat = Heartbeat(scheduler=_scheduler, job_manager=_job_manager)
 
 import json
 
@@ -90,6 +117,8 @@ Communication style:
 
 You have access to these actions:
 - "run_matlab": Execute MATLAB code (plots, simulations, animations, computations)
+- "run_python": Execute Python code (data science, scripting, pandas/numpy/matplotlib tasks)
+- "run_shell": Execute a shell/bash command (file ops, system info, CLI tools)
 - "project_gen": Create multi-file projects in any language (MATLAB, Python, HTML, etc.)
 - "query_memory": Recall past runs and experiments
 - "multi_agent_swarm": Break a complex task into a DAG and delegate to specialized agents.
@@ -98,18 +127,164 @@ You have access to these actions:
 Given the user's message and conversation history, respond with ONLY a valid JSON object (no markdown fences):
 {
   "reply": "Your warm, conversational response. Use markdown formatting.",
-  "action": "run_matlab" | "project_gen" | "query_memory" | "multi_agent_swarm" | "none",
-  "code": "Raw MATLAB code if action is run_matlab. null otherwise.",
+  "action": "run_matlab" | "run_python" | "run_shell" | "project_gen" | "query_memory" | "multi_agent_swarm" | "none",
+  "code": "Raw code for the chosen runtime. null for non-execution actions.",
   "project": {"name": "project_name", "description": "...", "files": [{"filename": "main.m", "language": "matlab", "content": "..."}]} or null,
   "dag_plan": {"nodes": [{"id":"node_1", "description":"do x", "inputs":[], "outputs":["data"], "agent_id":"agent-id"}]} or null
 }
+
+Runtime selection rules (STRICT — never override these):
+- Any request mentioning plot / graph / visualize / simulate / compute / calculate / solve / matrix / fft / ode / surf / mesh / contour / animate → ALWAYS use run_matlab
+- Python/pandas/numpy/ML/sklearn/torch keywords → ALWAYS use run_python
+- Shell/bash/ls/curl/grep/system keywords → ALWAYS use run_shell
+- Use "none" ONLY for pure Q&A with NO computation requested (e.g. "what is a PID controller?")
+- When in doubt between run_matlab and none → use run_matlab
+
+IMPORTANT: If a user asks you to "plot", "draw", "compute", "run", "simulate", or "generate" anything — you MUST use an execution action, never "none".
 
 Rules for code generation:
 - Use ONLY built-in MATLAB functions (plot, surf, mesh, fft, disp, fprintf, etc.)
 - Do NOT call LLM, AI, GPT, Claude, MatClaw, or any non-MATLAB function
 - For animations, use drawnow inside loops
 - For projects, put each function in its own .m file; first file is the entry point
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CODE QUALITY STANDARDS — always follow these
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+VISUALISATION — every plot must:
+1. Use figure('Position',[50 50 1100 750]) for a large canvas
+2. Use subplot() grids — never just one panel for multi-aspect requests
+   - Simulations: 3D path + top-view XY + altitude profile + speed/velocity panels
+   - Signal work: time-domain + frequency-domain + spectrogram side by side
+   - Control: step response + Bode + pole-zero map
+3. Colour-code trajectories by speed/time using a loop + colormap:
+   cmap = jet(N);
+   for i = 1:N-1
+     plot3([x(i) x(i+1)],[y(i) y(i+1)],[z(i) z(i+1)],'Color',cmap(i,:),'LineWidth',2);
+     hold on;
+   end
+4. Add sgtitle() with key stats (max value, duration, units)
+5. Label EVERY axis with units: xlabel('Time (s)'), ylabel('Altitude (m)')
+6. Use grid on; on every subplot
+7. Mark key events: scatter3 for waypoints, xline() for phase boundaries, text() for labels
+8. Use area() or fill() for shaded profiles instead of plain plot()
+9. Use yyaxis for dual-unit panels (e.g. altitude + speed on same time axis)
+
+PHYSICS & SIMULATION — always:
+1. Break missions/scenarios into named phases with if/elseif blocks
+2. Compute velocity with gradient(position, dt) — never assume constant speed
+3. Smooth noisy derivatives: movmean(signal, window)
+4. Pre-allocate arrays: x = zeros(N,1) before loops
+5. Print a stats summary with fprintf at the end:
+   fprintf('Max altitude: %.2f m | Max speed: %.2f m/s | Duration: %.0f s\n', ...)
+6. Use realistic parameters scaled to the domain:
+   - drone/quadrotor: radius 3-5m, altitude 5-10m, speed 5-15 m/s, T=20s
+   - rocket/launch vehicle/Starship: altitude 0-400km, speed 0-8000 m/s, T=600s, Isp~360s
+   - satellite orbit: altitude 400km, speed 7800 m/s, orbital period 5500s
+   - aircraft: altitude 0-12000m, speed 0-280 m/s, T=300s
+   - pendulum/robot: angles in radians, length 0.5-2m, period based on sqrt(L/g)
+
+EXAMPLE — drone simulation structure (use this as a template):
+  t = (0:dt:T)';  N = numel(t);
+  x=zeros(N,1); y=zeros(N,1); z=zeros(N,1);
+  for i=1:N
+    ti=t(i);
+    if ti<5          % Phase 1: takeoff
+      z(i)=0.3*ti^2; x(i)=0; y(i)=0;
+    elseif ti<12     % Phase 2: helical ascent
+      ph=(ti-5)*0.8; r=3;
+      x(i)=r*cos(ph); y(i)=r*sin(ph); z(i)=4+(ti-5)*0.5;
+    elseif ti<18     % Phase 3: orbit
+      ph=(ti-12)*1.1; r=4;
+      x(i)=r*cos(ph); y(i)=r*sin(ph); z(i)=7.5;
+    else             % Phase 4: land
+      frac=(ti-18)/4; x(i)=(1-frac)*4; y(i)=0; z(i)=7.5*(1-frac)^2;
+    end
+  end
+  vx=gradient(x,dt); vy=gradient(y,dt); vz=gradient(z,dt);
+  speed=movmean(sqrt(vx.^2+vy.^2+vz.^2),5);
+
+EXAMPLE — Starship/rocket launch to orbit (use for any rocket/space simulation):
+  dt=1; T=600; t=(0:dt:T)'; N=numel(t);
+  alt=zeros(N,1); vr=zeros(N,1);
+  for i=1:N
+    ti=t(i);
+    if ti<90          % Phase 1: launch & max-q  (0-90s, alt 0-40km)
+      alt(i)=0.5*4.0*(ti)^2;          % constant 4 m/s^2 accel
+    elseif ti<180     % Phase 2: booster sep     (90-180s, alt 40-120km)
+      alt(i)=40000 + 0.5*6*(ti-90)^2;
+    elseif ti<420     % Phase 3: vacuum burn     (180-420s, alt 120-400km)
+      frac=(ti-180)/240;
+      alt(i)=120000 + 280000*frac;
+    else              % Phase 4: orbit insertion (420-600s, stable orbit)
+      alt(i)=400000 + 500*sin((ti-420)*2*pi/180);
+    end
+  end
+  vr=gradient(alt,dt); speed=movmean(abs(vr),5);
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
+
+_SIM_KEYWORDS = {
+    "simulation", "simulate", "drone", "quadrotor", "robot", "trajectory",
+    "pid", "controller", "ode", "dynamics", "pendulum", "vehicle", "aircraft",
+    "missile", "satellite", "orbit", "kinematics", "motion", "path planning",
+    "flight", "autopilot", "control system", "state space", "transfer function",
+}
+
+_VIZ_KEYWORDS = {
+    "plot", "graph", "visualize", "visualise", "draw", "show", "display",
+    "surface", "surf", "mesh", "contour", "heatmap", "scatter", "histogram",
+    "animation", "animate", "3d", "dashboard", "chart",
+}
+
+def _classify_intent(text: str) -> str:
+    """
+    Classify the user's request to decide if extra quality context should be injected.
+    Returns: 'simulation' | 'visualization' | 'general'
+    """
+    lower = text.lower()
+    if any(kw in lower for kw in _SIM_KEYWORDS):
+        return "simulation"
+    if any(kw in lower for kw in _VIZ_KEYWORDS):
+        return "visualization"
+    return "general"
+
+
+_SIMULATION_BOOST = """
+[SIMULATION REQUEST DETECTED — MANDATORY QUALITY REQUIREMENTS]
+This is a dynamics/simulation task. You MUST:
+1. Implement multiple mission phases (at least 3-4) with if/elseif blocks — NOT a single parametric formula
+2. Use gradient(position, dt) to compute velocity — NEVER assume constant speed
+3. Use movmean() to smooth velocity/speed signals (window=5 minimum)
+4. Scale parameters REALISTICALLY for the domain:
+   - drone/quadrotor: altitude 5-10m, speed 5-15 m/s, T=20s
+   - rocket/Starship/launch vehicle: altitude 0-400km (400000m), speed 0-7800 m/s, T=600s (10 min)
+   - satellite: altitude 400km, orbital speed 7800 m/s, period 5500s
+   - aircraft: altitude 0-12000m, speed 0-280 m/s, T=300s
+5. Generate a multi-panel figure (minimum 4 subplots):
+   - Panel 1 (large, left): 3D trajectory, colour-coded by speed using a loop+colormap
+   - Panel 2: top-view XY plot with start/end markers
+   - Panel 3: altitude profile using area() fill, with xline() phase markers + text labels
+   - Panel 4: speed profile using fill() or area() shading
+6. Call sgtitle() with key stats: max altitude, max speed, total duration
+7. Print stats with fprintf at the end
+8. Use figure('Position',[50 50 1100 780]) for a large canvas
+DO NOT use tiny scale numbers. DO NOT generate a simple parametric helix. Generate REAL phased mission dynamics with correct engineering units.
+DO NOT call external functions — all code MUST be self-contained in a single script. No function calls to undefined helpers.
+"""
+
+_VISUALIZATION_BOOST = """
+[VISUALIZATION REQUEST DETECTED — MANDATORY QUALITY REQUIREMENTS]
+This is a visualization task. You MUST:
+1. Use figure('Position',[50 50 1100 750]) — large canvas
+2. Use multiple subplots showing different aspects/projections
+3. Use colormaps and colour-coded data where applicable
+4. Label all axes with units, add grid on, add a descriptive title
+5. Use area(), fill(), or patch() for shaded regions instead of plain plot lines
+6. Add annotations: text(), legend(), colorbar() where appropriate
+"""
+
 
 def _build_messages(
     user_text: str,
@@ -117,6 +292,13 @@ def _build_messages(
     history: list[dict[str, str]] | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
     """Build (system_arg, messages) for the LLM call. Shared by sync and streaming paths."""
+    # Inject intent-specific quality boost into the system prompt
+    intent = _classify_intent(user_text)
+    if intent == "simulation":
+        system = system + _SIMULATION_BOOST
+    elif intent == "visualization":
+        system = system + _VISUALIZATION_BOOST
+
     # Dynamically append registered agent context to the system prompt
     try:
         from src.matclaw.agents.registry import AgentRegistry
@@ -171,6 +353,36 @@ def _llm_chat(user_text: str, system: str = MATCLAW_PERSONA,
         return ""
 
 
+def _escape_json_control_chars(s: str) -> str:
+    """
+    Escape raw control characters (newlines, tabs, etc.) that appear literally
+    inside JSON string values. The LLM sometimes emits actual newlines within a
+    quoted value, which makes json.loads raise 'Invalid control character'.
+    """
+    result: list[str] = []
+    in_string = False
+    escape_next = False
+    _ctrl = {'\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f'}
+    for ch in s:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\':
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ord(ch) < 0x20:
+            result.append(_ctrl.get(ch, f'\\u{ord(ch):04x}'))
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
 def _parse_llm_response(raw: str) -> dict[str, Any]:
     """Parse the LLM's JSON response, handling markdown fences and malformed output."""
     if not raw:
@@ -184,11 +396,16 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
-    # Try to extract the first {...} block
+    # Escape literal control chars inside string values and retry
+    try:
+        return json.loads(_escape_json_control_chars(cleaned))
+    except json.JSONDecodeError:
+        pass
+    # Try to extract the first {...} block (handles trailing garbage)
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group())
+            return json.loads(_escape_json_control_chars(match.group()))
         except json.JSONDecodeError:
             pass
     # LLM sometimes omits outer braces — wrap and retry
@@ -197,6 +414,33 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
             return json.loads("{" + cleaned + "}")
         except json.JSONDecodeError:
             pass
+    # ── Truncated JSON recovery ───────────────────────────────────────────
+    # NVIDIA streaming sometimes cuts off the response mid-code-string.
+    # Rescue what we can: extract "reply", "action", "code" via targeted regex
+    # even from malformed/incomplete JSON.
+    rescued: dict[str, Any] = {}
+    _reply_m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned, re.DOTALL)
+    if _reply_m:
+        try:
+            rescued["reply"] = json.loads('"' + _reply_m.group(1) + '"')
+        except Exception:
+            rescued["reply"] = _reply_m.group(1).replace('\\"', '"')
+    _action_m = re.search(r'"action"\s*:\s*"(\w+)"', cleaned)
+    if _action_m:
+        rescued["action"] = _action_m.group(1)
+    # Code: grab everything after "code": " up to end (truncated string ok)
+    _code_m = re.search(r'"code"\s*:\s*"(.*)', cleaned, re.DOTALL)
+    if _code_m:
+        raw_code = _code_m.group(1)
+        # Strip trailing: ",\n  "project"... or just end of string
+        raw_code = re.sub(r'",?\s*\n?\s*"(?:project|dag_plan)".*$', '', raw_code, flags=re.DOTALL).rstrip('",')
+        try:
+            rescued["code"] = json.loads('"' + raw_code + '"')
+        except Exception:
+            # Manual unescape of \n \t \\
+            rescued["code"] = raw_code.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
+    if rescued:
+        return rescued
 
     # ── Plain-text fallback: LLM didn't produce JSON ──────────────────────
     # Extract code blocks (```matlab ... ```) from plain text
@@ -223,6 +467,49 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
 PLOTS_DIR = ROOT / "plots"
 PLOTS_DIR.mkdir(exist_ok=True)
 
+
+def _check_plot_quality(plot_path: str, matlab_output: str) -> dict:
+    """Check plot quality using PIL pixel statistics. No API key needed."""
+    issues: list[str] = []
+
+    # Check A: MATLAB error in output
+    if "MATLAB error:" in matlab_output or "execution failed" in matlab_output.lower():
+        return {"status": "error", "issues": ["MATLAB execution error"]}
+
+    # Check B: PIL-based blank detection
+    if plot_path and os.path.exists(plot_path):
+        try:
+            from PIL import Image
+            import numpy as np
+            arr = np.array(Image.open(plot_path).convert("RGB"))
+            std = float(arr.std())
+            if std < 8:
+                issues.append(f"plot is blank or nearly empty (pixel std={std:.1f})")
+            elif std < 15:
+                issues.append(f"plot has very low visual content (pixel std={std:.1f}) — may be missing data")
+        except Exception as exc:
+            logger.debug("PIL quality check failed: %s", exc)
+
+    # Check C: No meaningful output
+    stripped = matlab_output.strip()
+    if not stripped or (stripped.startswith("MATLAB executed successfully") and len(stripped) < 50):
+        issues.append("no meaningful output or stats printed")
+
+    return {"status": "poor" if issues else "good", "issues": issues}
+
+
+def _sentry_retry_code(original_request: str, original_code: str, issues: list[str]) -> str:
+    """Ask the LLM to fix the code given a list of detected issues."""
+    issue_summary = "; ".join(issues)
+    prompt = (
+        f"The previous MATLAB code had quality issues: {issue_summary}.\n\n"
+        f"Original request: {original_request}\n\n"
+        f"Original code:\n```matlab\n{original_code}\n```\n\n"
+        "Fix these specific issues and return ONLY the corrected MATLAB code block. "
+        "Do not include any explanation — just the fixed code."
+    )
+    return _llm_chat(prompt, system=MATCLAW_PERSONA)
+
 # Connect to the running MATLAB session on startup
 logger.info("Connecting to MATLAB session...")
 try:
@@ -242,8 +529,26 @@ try:
 except Exception as _e:
     logger.warning("MATLAB startup skipped: %s", _e)
 
+# ── lifespan — starts/stops all background services ──────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Register runtimes now that bridge is live
+    _runtime_registry.register(MatlabRuntime(bridge, _run_matlab_and_collect))
+    _runtime_registry.register(PythonRuntime(cwd=str(ROOT), venv_python=sys.executable))
+    _runtime_registry.register(ShellRuntime(cwd=str(ROOT)))
+    # Auto-discover pluggable tools
+    tool_registry.discover()
+    # Start daemon
+    _heartbeat.start()
+    logger.info("MatClaw enterprise daemon started. Runtimes: %s",
+                [r["name"] for r in _runtime_registry.list_runtimes()])
+    yield
+    _heartbeat.stop()
+    logger.info("MatClaw daemon stopped.")
+
+
 # ── app ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title="MatClaw API", version="2.0.0")
+app = FastAPI(title="MatClaw API", version="2.0.0", lifespan=lifespan)
 
 # Initialize subsystems
 agent_registry = AgentRegistry()
@@ -253,6 +558,15 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Enterprise middleware (auth off by default — enable via MATCLAW_AUTH__ENABLED=true)
+_auth_enabled = os.environ.get("MATCLAW_AUTH__ENABLED", "false").lower() == "true"
+app.add_middleware(
+    EnterpriseMiddleware,
+    key_store=_key_store,
+    auth_enabled=_auth_enabled,
+    metrics=_metrics,
 )
 
 app.mount("/plots", StaticFiles(directory=str(PLOTS_DIR)), name="plots")
@@ -271,10 +585,18 @@ if _FRONTEND_DIST.is_dir():
 
 # ── request / response models ────────────────────────────────────────────────
 class RunRequest(BaseModel):
-    text: str
+    text: str = ""
+    message: str = ""      # alias used by CLI / webhook
     session_id: str = "default"
     history: list[dict[str, str]] = []  # [{"role": "user", "text": "..."}, ...]
     mode: str = "auto"  # "ask" | "auto" | "plan" | "agentic"
+    force_runtime: str | None = None  # "matlab" | "python" | "shell" — bypasses NL routing
+    sentry_mode: bool = False   # auto-check result quality and retry on failure
+    doctor_mode: bool = True    # run CodeDoctor auto-debug loop on bad results
+
+    @property
+    def effective_text(self) -> str:
+        return self.text or self.message
 
 
 class RunResponse(BaseModel):
@@ -359,7 +681,7 @@ def _run_via_script(code: str) -> tuple[bool, str]:
     from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
 
     with tempfile.NamedTemporaryFile(suffix=".m", delete=False, mode="w",
-                                     encoding="ascii", errors="replace") as f:
+                                     encoding="utf-8", errors="replace") as f:
         f.write(code)
         script_path = f.name.replace("\\", "/")
 
@@ -378,6 +700,102 @@ def _run_via_script(code: str) -> tuple[bool, str]:
             pass
 
 
+def _sanitize_matlab_code(code: str) -> str:
+    """
+    Auto-repair common LLM MATLAB code mistakes before execution.
+
+    Fixed patterns:
+    1. jet(N)(i,:)        -> cmap = jet(N) pre-declared, cmap(i,:)
+    2. \\end{...}          -> remove LaTeX remnants
+    3. scatter(x,y,'c','Label') -> scatter(x,y,80,'c','filled')
+    4. xline(v,'Label')   -> xline(v,'--','Label')
+    5. area(t,z,'b')      -> area(t,z,'FaceColor','b','FaceAlpha',0.5)
+    6. fill(t,y,'b')      -> closed polygon fill
+    7. fprintf with literal newline inside single-quoted string
+    """
+    import re as _re
+
+    # 1: jet(N)(i,:) -> cmap pre-declared
+    if _re.search(r'jet\(\w+\)\(\w+,:\)', code):
+        n_var = _re.search(r'jet\((\w+)\)', code)
+        n_arg = n_var.group(1) if n_var else "N"
+        code = _re.sub(r'jet\(\w+\)\((\w+),:\)', lambda m: f'cmap({m.group(1)},:)', code)
+        code = _re.sub(r'(for\s+\w+\s*=\s*1\s*:\s*\w+-1)',
+                      f'cmap = jet({n_arg});\\n\\1', code, count=1)
+
+    # 2: Remove LaTeX \end{...} remnants
+    code = _re.sub(r'\\\\end\{[^}]*\}\s*', '', code)
+
+    # 3: scatter(x,y,'color','Label') -> scatter(x,y,80,'color','filled')
+    code = _re.sub(
+        r"scatter\(([^,]+),\s*([^,]+),\s*'([a-z])'\s*,\s*'[^']*'\)",
+        r"scatter(\1, \2, 80, '\3', 'filled')",
+        code
+    )
+
+    # 4: xline(v,'Label') -> xline(v,'--','Label')
+    code = _re.sub(
+        r"xline\(([^,)]+),\s*'([^'-][^']*)'\)",
+        r"xline(\1, '--', '\2')",
+        code
+    )
+
+    # 5: area(t,z,'b') -> area(t,z,'FaceColor','b')
+    code = _re.sub(
+        r"\barea\(([^,]+),\s*([^,]+),\s*'([a-z])'\)",
+        r"area(\1, \2, 'FaceColor', '\3', 'FaceAlpha', 0.5)",
+        code
+    )
+
+    # 6: fill(t,speed,'b') -> closed polygon
+    def _fix_fill(m):
+        xa, ya, ca = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+        return (f"fill([{xa}; flipud({xa})], [{ya}; zeros(size({xa}))], "
+                f"'{ca}', 'FaceAlpha', 0.2, 'EdgeColor', 'none')")
+    code = _re.sub(r"\bfill\(([^,)]+),\s*([^,)]+),\s*'([a-z])'\)", _fix_fill, code)
+
+    # 7: Raw literal newline inside fprintf single-quoted string
+    def _fix_fprintf(m):
+        return m.group(0).replace('\n', '\\n')
+    code = _re.sub(r"fprintf\('[^']*\n[^']*'\)", _fix_fprintf, code)
+
+    # 8: scatter3(x,y,z,'c','o','MarkerSize',N) -> scatter3(x,y,z,N,'c','filled')
+    #    scatter3(x,y,z,'c','o') -> scatter3(x,y,z,80,'c','filled')
+    def _fix_scatter3(m):
+        x, y, z, rest = m.group(1).strip(), m.group(2).strip(), m.group(3).strip(), m.group(4)
+        # Extract color char and optional MarkerSize
+        color_m = _re.search(r"'([a-z])'", rest)
+        size_m = _re.search(r"'MarkerSize'\s*,\s*(\d+)", rest, _re.IGNORECASE)
+        color = color_m.group(1) if color_m else 'b'
+        sz = size_m.group(1) if size_m else '80'
+        return f"scatter3({x}, {y}, {z}, {sz}, '{color}', 'filled')"
+    code = _re.sub(
+        r"\bscatter3\(([^,]+),\s*([^,]+),\s*([^,]+),\s*([^)]+)\)",
+        lambda m: _fix_scatter3(m) if _re.search(r"'[a-z]'", m.group(4)) else m.group(0),
+        code
+    )
+
+    # 9: scatter(x,y,'c','o','MarkerSize',N) and scatter(x,y,'c','o')
+    def _fix_scatter2(m):
+        x, y, rest = m.group(1).strip(), m.group(2).strip(), m.group(3)
+        color_m = _re.search(r"'([a-z])'", rest)
+        size_m = _re.search(r"'MarkerSize'\s*,\s*(\d+)", rest, _re.IGNORECASE)
+        color = color_m.group(1) if color_m else 'b'
+        sz = size_m.group(1) if size_m else '80'
+        return f"scatter({x}, {y}, {sz}, '{color}', 'filled')"
+    code = _re.sub(
+        r"\bscatter\(([^,]+),\s*([^,)]+),\s*([^)]+)\)",
+        lambda m: _fix_scatter2(m) if _re.search(r"(?:'[a-z]'.*'MarkerSize'|'[a-z]'\s*,\s*'o')", m.group(3)) else m.group(0),
+        code
+    )
+
+    # 10: Fix 'FaceColor', 'gray' -> [0.5 0.5 0.5]
+    code = _re.sub(r"'FaceColor'\s*,\s*'gray'", "'FaceColor', [0.5 0.5 0.5]", code, flags=_re.IGNORECASE)
+    code = _re.sub(r"'Color'\s*,\s*'gray'", "'Color', [0.5 0.5 0.5]", code, flags=_re.IGNORECASE)
+
+    return code
+
+
 def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
     """Run MATLAB code, collect stdout + plots, return (output_text, plot_urls)."""
     ts = int(time.time())
@@ -390,13 +808,33 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
         plots.append(gif_url)
         output = f"Animation rendered: {gif_url.split('/')[-1]}"
     else:
-        # inject plot-save at the end
-        save_code = (
-            f"\ntry, exportgraphics(gcf, '{PLOTS_DIR}/{plot_name}.png', 'Resolution', 100); "
-            f"catch, try, print(gcf, '-dpng', '-r100', '{PLOTS_DIR}/{plot_name}.png'); end; end"
+        # Auto-repair common LLM code mistakes before execution
+        code = _sanitize_matlab_code(code)
+        # Wrap user code: force figures invisible (no pop-up windows, renders to memory),
+        # save any open figure, then close all so no ghost windows remain.
+        save_path = f"{PLOTS_DIR}/{plot_name}.png"
+        wrapped_code = (
+            # Make all new figures render off-screen
+            "set(0, 'DefaultFigureVisible', 'off');\n"
+            + code
+            + f"\ntry; figs = get(0, 'Children'); "
+            f"if ~isempty(figs); exportgraphics(figs(1), '{save_path}', 'Resolution', 150); end; "
+            f"catch; try; print(gcf, '-dpng', '-r150', '{save_path}'); catch; end; end\n"
+            f"close all;\n"
+            f"set(0, 'DefaultFigureVisible', 'on');\n"
         )
-        ok, stdout = _run_via_script(code + save_code)
+        ok, stdout = _run_via_script(wrapped_code)
         if not ok and stdout:
+            # Debug: log the failing code snippet around the error line
+            m_line = re.search(r'Line:\s*(\d+)', stdout)
+            if m_line:
+                err_line = int(m_line.group(1))
+                lines = wrapped_code.splitlines()
+                snippet_start = max(0, err_line - 3)
+                snippet = "\n".join(
+                    f"{snippet_start+i+1}: {l}" for i, l in enumerate(lines[snippet_start:err_line+1])
+                )
+                logger.warning("MATLAB error at line %d. Code snippet:\n%s", err_line, snippet)
             # Return concise error — strip internal temp file paths from the message
             clean_err = re.sub(r"File /[^\n]+\.m[^\n]*\n?", "", stdout).strip()
             clean_err = re.sub(r"File /Applications/MATLAB[^\n]*\n?", "", clean_err).strip()
@@ -469,6 +907,29 @@ async def terminal_ws(websocket: WebSocket):
 @app.get("/health")
 def health():
     return {"status": "ok", "matlab": bridge.is_healthy()}
+
+
+# ── Vision Analysis Endpoint ───────────────────────────────────────────────────
+
+@app.post("/api/vision/analyze")
+async def analyze_plot_endpoint(body: dict):
+    """Run LLM-based analysis on a plot image using the existing vision analyst."""
+    plot_path: str = body.get("plot_path", "")
+    # Accept URLs like "/plots/plot_123.png" or just a filename
+    rel = plot_path.lstrip("/")
+    if not rel.startswith("plots/"):
+        rel = f"plots/{rel}"
+    full_path = ROOT / rel
+    if not full_path.exists():
+        return {"analysis": f"Plot file not found: {rel}"}
+    try:
+        from matclaw.vision.analyst import analyze_plot
+        analysis = await asyncio.to_thread(analyze_plot, str(full_path))
+        return {"analysis": analysis or "Analysis not available (no API key configured)"}
+    except Exception as exc:
+        logger.warning("Vision analysis failed: %s", exc)
+        return {"analysis": f"Analysis failed: {exc}"}
+
 
 # ── Session Persistence Endpoints ─────────────────────────────────────────────
 
@@ -937,7 +1398,7 @@ async def run_nl(req: RunRequest):
     try:
         # ── Phase 1: LLM decides action + generates conversational reply ──
         raw_resp = _llm_chat(
-            req.text,
+            req.effective_text,
             system=MATCLAW_PERSONA,
             history=req.history[-10:] if req.history else None,
             max_tokens=8192,
@@ -951,7 +1412,7 @@ async def run_nl(req: RunRequest):
         # ── Fallback: if LLM didn't return valid JSON, use keyword router ──
         if not plan or not reply:
             logger.info("LLM routing failed, falling back to keyword router")
-            fallback_skill, _ = route_nl_message(req.text)
+            fallback_skill, _ = route_nl_message(req.effective_text)
             if fallback_skill in ("run_matlab",):
                 action = "run_matlab"
                 reply = ""
@@ -975,16 +1436,16 @@ async def run_nl(req: RunRequest):
 
             # Fallback to curated demo library
             if not code:
-                code = find_demo(req.text) or ""
+                code = find_demo(req.effective_text) or ""
 
             # Guard against hallucinated functions
             if code:
                 bad = [r"\bLLM\b", r"\bAI\s*\(", r"\bMatClaw\s*\(", r"\bClaude\s*\("]
                 if any(re.search(p, code, re.IGNORECASE) for p in bad):
-                    code = find_demo(req.text) or ""
+                    code = find_demo(req.effective_text) or ""
 
             if code:
-                exec_output, plots = _run_matlab_and_collect(code, req.text)
+                exec_output, plots = _run_matlab_and_collect(code, req.effective_text)
                 # Blend conversational reply with execution result
                 if reply and exec_output and not exec_output.startswith("MATLAB error"):
                     output = reply
@@ -1025,7 +1486,7 @@ async def run_nl(req: RunRequest):
             # Gather memory data
             mem_lines: list[str] = []
             try:
-                semantic = memory.query_context(req.text, n_results=5)
+                semantic = memory.query_context(req.effective_text, n_results=5)
                 for r in semantic:
                     meta = r.get("metadata", {})
                     req_text = meta.get("request", r.get("document", ""))
@@ -1141,13 +1602,89 @@ async def run_nl_stream(req: RunRequest):
             except Exception as _e:
                 logger.debug("state_tracker update failed: %s", _e)
 
+        # ── force_runtime shortcut (bypasses LLM routing) ─────────────────
+        if req.force_runtime:
+            rt_name = req.force_runtime
+            code = req.effective_text
+            yield _sse("tool_start", {"action": f"run_{rt_name}", "label": f"Running {rt_name}..."})
+            try:
+                result = await asyncio.to_thread(
+                    _runtime_registry.execute, rt_name, code, {"task": code[:120]}
+                )
+                if result.success:
+                    yield _sse("tool_result", {"output": result.output, "plots": result.plots, "files": []})
+                    yield _sse("text", {"token": result.output})
+                else:
+                    yield _sse("tool_result", {"output": result.error, "plots": [], "files": []})
+                    yield _sse("error", {"message": result.error})
+            except Exception as _rt_exc:
+                yield _sse("error", {"message": str(_rt_exc)})
+            return
+
+        # ── Agentic mode: iterative tool-use loop ─────────────────────────────
+        if req.mode == "agentic":
+            async def _agentic_runtime_dispatch(tool_name: str, inputs: dict):
+                """Dispatcher used by the agentic loop to run tools and runtimes."""
+                # Virtual runtime tools
+                if tool_name == "run_matlab":
+                    code = inputs.get("code", "")
+                    output, plots = await asyncio.to_thread(
+                        _run_matlab_and_collect, code, req.effective_text
+                    )
+                    # Run CodeDoctor on agentic MATLAB results too
+                    if req.doctor_mode:
+                        doctor_events_ag: list[tuple[str, dict]] = []
+                        def _on_ag_event(ev: str, d: dict) -> None:
+                            doctor_events_ag.append((ev, d))
+                        code, output, plots, _ = await asyncio.to_thread(
+                            run_code_doctor,
+                            code, output, plots,
+                            req.effective_text, str(PLOTS_DIR),
+                            lambda c, t: _run_matlab_and_collect(c, t),
+                            _llm_chat, _on_ag_event,
+                        )
+                        # Emit doctor events into the SSE stream
+                        # (they will be yielded by the agentic loop's caller)
+                        for _ev, _d in doctor_events_ag:
+                            pass   # agentic loop doesn't have a yield here;
+                                   # events are stored and can be forwarded via agent_result
+                    return output, plots
+                if tool_name in ("run_python", "run_shell"):
+                    rt = "python" if tool_name == "run_python" else "shell"
+                    code = inputs.get("code") or inputs.get("command", "")
+                    result = await asyncio.to_thread(
+                        _runtime_registry.execute, rt, code, {"task": req.effective_text[:120]}
+                    )
+                    out = result.output if result.success else result.error
+                    return out, getattr(result, "plots", [])
+                # Pluggable tools (web_fetch, file_ops, …)
+                plugin = tool_registry.get(tool_name)
+                if plugin:
+                    from src.matclaw.tools.base import ToolContext
+                    ctx = ToolContext(tenant_id="default", request_id=req.session_id)
+                    tr = await plugin.run(inputs, ctx)
+                    out_str = str(tr.output) if tr.success else tr.error
+                    plots = getattr(tr, "artifacts", [])
+                    return out_str, plots
+                return f"Unknown tool: {tool_name}", []
+
+            async for event in run_agentic_loop(
+                user_text=req.effective_text,
+                history=req.history,
+                settings=settings,
+                tool_registry=tool_registry,
+                runtime_dispatcher=_agentic_runtime_dispatch,
+            ):
+                yield event
+            return
+
         try:
             # ── Phase 0: Mark as RESEARCHING ────────────────────────────
             await asyncio.to_thread(_log_episode, "researching", {"user_text": req.text, "session_id": req.session_id})
             await asyncio.to_thread(_set_state, ExecutionState.RESEARCHING, {"text": req.text})
 
             sys_arg, messages = _build_messages(
-                req.text, MATCLAW_PERSONA,
+                req.effective_text, MATCLAW_PERSONA,
                 req.history[-10:] if req.history else None,
             )
 
@@ -1206,17 +1743,43 @@ async def run_nl_stream(req: RunRequest):
                 yield _sse("text", {"token": reply})
             action = plan.get("action", "none")
 
+            # Override: if LLM chose "none" but NL router strongly signals an execution,
+            # promote the action so the user gets a result (not just a chat response).
+            if action == "none" and plan:
+                _nl_signal, _ = route_nl_message(req.effective_text)
+                if _nl_signal in ("run_matlab", "run_python", "run_shell"):
+                    action = _nl_signal
+                    plan.setdefault("code", None)
+
             # Fallback to keyword router if JSON parsing failed
             if not plan or not reply:
-                fallback_skill, _ = route_nl_message(req.text)
+                fallback_skill, _ = route_nl_message(req.effective_text)
                 if fallback_skill in ("run_matlab",):
                     action = "run_matlab"
+                    plan["code"] = None
+                elif fallback_skill == "run_python":
+                    action = "run_python"
+                    plan["code"] = None
+                elif fallback_skill == "run_shell":
+                    action = "run_shell"
                     plan["code"] = None
                 elif fallback_skill == "query_memory":
                     action = "query_memory"
                 else:
                     action = "none"
-                    reply = raw if raw else "I'm not sure how to help with that."
+                    # Safety: if raw looks like JSON, try extracting "reply" field
+                    # rather than dumping the entire JSON string as the chat reply
+                    _fallback_raw = raw if raw else "I'm not sure how to help with that."
+                    if _fallback_raw.strip().startswith('{'):
+                        try:
+                            _fb = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", _fallback_raw.strip()))
+                            reply = _fb.get("reply") or _fallback_raw
+                        except Exception:
+                            reply = _fallback_raw
+                    else:
+                        reply = _fallback_raw
+                    if not reply:
+                        reply = "I'm not sure how to help with that."
 
             skill_name = action if action != "none" else "chat"
             plots: list[str] = []
@@ -1252,8 +1815,10 @@ async def run_nl_stream(req: RunRequest):
             if action == "run_matlab":
                 code = plan.get("code") or ""
                 code = re.sub(r"```(?:matlab)?\s*|\s*```", "", code).strip()
+                if code:
+                    code = _sanitize_matlab_code(code)
                 if not code:
-                    code = find_demo(req.text) or ""
+                    code = find_demo(req.effective_text) or ""
 
                 if code:
                     # ── StaticAnalyzer pre-check ──────────────────────────
@@ -1273,13 +1838,113 @@ async def run_nl_stream(req: RunRequest):
 
                     yield _sse("tool_start", {"action": "run_matlab", "label": "Running MATLAB code..."})
                     exec_output, plots = await asyncio.to_thread(
-                        _run_matlab_and_collect, code, req.text
+                        _run_matlab_and_collect, code, req.effective_text
                     )
                     yield _sse("tool_result", {
                         "output": exec_output,
                         "plots": plots,
                         "files": [],
+                        "code": code,
                     })
+
+                    # ── CodeDoctor: autonomous debug loop ─────────────────
+                    if req.doctor_mode:
+                        doctor_events: list[tuple[str, dict]] = []
+
+                        def _on_doctor_event(event: str, data: dict) -> None:
+                            doctor_events.append((event, data))
+
+                        def _doctor_executor(fixed_code: str, task: str) -> tuple[str, list[str]]:
+                            return _run_matlab_and_collect(fixed_code, task)
+
+                        code, exec_output, plots, _rounds = await asyncio.to_thread(
+                            run_code_doctor,
+                            code, exec_output, plots,
+                            req.effective_text,
+                            str(PLOTS_DIR),
+                            _doctor_executor,
+                            _llm_chat,          # LLM fallback (sync)
+                            _on_doctor_event,
+                        )
+
+                        # Flush collected doctor events as SSE
+                        for ev_name, ev_data in doctor_events:
+                            yield _sse(ev_name, ev_data)
+
+                        # If doctor changed the code/plots, emit updated tool_result
+                        if _rounds:
+                            yield _sse("tool_result", {
+                                "output": exec_output,
+                                "plots": plots,
+                                "files": [],
+                                "code": code,
+                            })
+
+                    # ── Sentry Mode: quality check + auto-retry ───────────
+                    if req.sentry_mode and plots:
+                        yield _sse("sentry_start", {"message": "Checking result quality..."})
+                        retried = False
+                        for attempt in range(1, 3):  # max 2 retries
+                            plot_fs_path = str(PLOTS_DIR / plots[0].lstrip("/").replace("plots/", ""))
+                            quality = _check_plot_quality(plot_fs_path, exec_output)
+                            if quality["status"] == "good":
+                                yield _sse("sentry_done", {
+                                    "quality": "good",
+                                    "message": "✓ Result verified",
+                                })
+                                retried = True
+                                break
+                            yield _sse("sentry_issue", {
+                                "attempt": attempt,
+                                "max_attempts": 2,
+                                "issues": quality["issues"],
+                                "message": f"Attempt {attempt}: {'; '.join(quality['issues'])}. Retrying...",
+                            })
+                            fixed_code = await asyncio.to_thread(
+                                _sentry_retry_code, req.effective_text, code, quality["issues"]
+                            )
+                            if not fixed_code:
+                                break
+                            # Extract code block if LLM wrapped it in markdown
+                            fixed_code = re.sub(r"```(?:matlab)?\s*|\s*```", "", fixed_code).strip()
+                            code = fixed_code
+                            yield _sse("tool_start", {
+                                "action": "run_matlab",
+                                "label": f"Sentry retry {attempt}/2...",
+                            })
+                            exec_output, plots = await asyncio.to_thread(
+                                _run_matlab_and_collect, code, req.effective_text
+                            )
+                            yield _sse("tool_result", {
+                                "output": exec_output,
+                                "plots": plots,
+                                "files": [],
+                                "code": code,
+                            })
+                        if not retried:
+                            yield _sse("sentry_done", {
+                                "quality": "poor",
+                                "message": "Max retries reached — result may need manual review",
+                            })
+
+            elif action in ("run_python", "run_shell"):
+                rt_name = "python" if action == "run_python" else "shell"
+                code = plan.get("code") or ""
+                code = re.sub(r"```(?:python|bash|sh|shell)?\s*|\s*```", "", code).strip()
+                if code:
+                    await asyncio.to_thread(_log_episode, "implementing", {"runtime": rt_name, "code_len": len(code)})
+                    await asyncio.to_thread(_set_state, ExecutionState.IMPLEMENTING, {})
+                    yield _sse("tool_start", {"action": action, "label": f"Running {rt_name}..."})
+                    result = await asyncio.to_thread(
+                        _runtime_registry.execute, rt_name, code, {"task": req.effective_text[:120]}
+                    )
+                    exec_output = result.output if result.success else result.error
+                    yield _sse("tool_result", {
+                        "output": exec_output,
+                        "plots": result.plots,
+                        "files": [],
+                    })
+                    plots.extend(result.plots)
 
             elif action == "project_gen":
                 skill_name = "project_gen"
@@ -1440,7 +2105,7 @@ async def run_nl_stream(req: RunRequest):
                 yield _sse("tool_start", {"action": "query_memory", "label": "Searching memory..."})
                 mem_lines: list[str] = []
                 try:
-                    semantic = memory.query_context(req.text, n_results=5)
+                    semantic = memory.query_context(req.effective_text, n_results=5)
                     for r in semantic:
                         meta = r.get("metadata", {})
                         req_text = meta.get("request", r.get("document", ""))
@@ -1487,6 +2152,183 @@ async def run_nl_stream(req: RunRequest):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ── Enterprise: Metrics ──────────────────────────────────────────────────────
+
+@app.get("/metrics")
+def get_metrics():
+    """Prometheus-style metrics snapshot."""
+    return _metrics.snapshot()
+
+
+@app.get("/api/daemon/status")
+def daemon_status():
+    """Daemon heartbeat status."""
+    return _heartbeat.status()
+
+
+# ── Enterprise: Runtimes ──────────────────────────────────────────────────────
+
+@app.get("/api/runtimes")
+def list_runtimes():
+    """List all registered execution runtimes and their availability."""
+    return _runtime_registry.list_runtimes()
+
+
+@app.post("/api/runtimes/{runtime_name}/execute")
+async def execute_runtime(runtime_name: str, body: dict):
+    """Directly execute code on a named runtime. Body: {code: str}"""
+    code = body.get("code", "")
+    if not code:
+        raise HTTPException(status_code=400, detail="code is required")
+    result = await asyncio.to_thread(
+        _runtime_registry.execute, runtime_name, code, {"task": code[:120]}
+    )
+    return {
+        "success": result.success,
+        "output": result.output,
+        "plots": result.plots,
+        "elapsed_ms": result.elapsed_ms,
+        "error": result.error,
+    }
+
+
+# ── Enterprise: Tools ─────────────────────────────────────────────────────────
+
+@app.get("/api/tools")
+def list_tools():
+    """List all registered tools with their manifests."""
+    return [t.model_dump() for t in tool_registry.list_tools()]
+
+
+@app.post("/api/tools/{tool_name}/run")
+async def run_tool(tool_name: str, inputs: dict):
+    """Execute a registered tool by name."""
+    from src.matclaw.tools.base import ToolContext
+    tool = tool_registry.get(tool_name)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    result = await tool.run(inputs, ToolContext())
+    return {"success": result.success, "output": result.output,
+            "error": result.error, "artifacts": result.artifacts}
+
+
+# ── Enterprise: Scheduler ─────────────────────────────────────────────────────
+
+@app.get("/api/scheduler/tasks")
+def list_scheduled_tasks():
+    return [t.model_dump() for t in _scheduler.list_tasks()]
+
+
+@app.post("/api/scheduler/tasks")
+def create_scheduled_task(body: dict):
+    import time as _t
+    task = ScheduledTask(
+        id=str(uuid.uuid4())[:8],
+        name=body.get("name", "unnamed"),
+        cron_expression=body.get("cron_expression", "@hourly"),
+        runtime=body.get("runtime", "shell"),
+        command=body.get("command", ""),
+        enabled=body.get("enabled", True),
+        tenant_id=body.get("tenant_id", "default"),
+        created_at=int(_t.time()),
+    )
+    return _scheduler.add_task(task).model_dump()
+
+
+@app.delete("/api/scheduler/tasks/{task_id}")
+def delete_scheduled_task(task_id: str):
+    if not _scheduler.remove_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"ok": True}
+
+
+# ── Enterprise: Auth / API Keys ───────────────────────────────────────────────
+
+class CreateKeyRequest(BaseModel):
+    label: str
+    role: str = "developer"
+    tenant_id: str = "default"
+    rate_limit_rpm: int = 60
+
+
+@app.post("/api/auth/keys")
+def create_api_key(req: CreateKeyRequest):
+    from src.matclaw.api.auth import Role
+    raw_key, ak = _key_store.create_key(
+        label=req.label,
+        role=req.role,  # type: ignore[arg-type]
+        tenant_id=req.tenant_id,
+        rate_limit_rpm=req.rate_limit_rpm,
+    )
+    return {"raw_key": raw_key, **ak.safe_dict()}
+
+
+@app.get("/api/auth/keys")
+def list_api_keys():
+    return [k.safe_dict() for k in _key_store.list_keys()]
+
+
+@app.delete("/api/auth/keys/{key_id}")
+def revoke_api_key(key_id: str):
+    if not _key_store.revoke_key(key_id):
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"ok": True}
+
+
+@app.get("/api/audit")
+def get_audit_log(limit: int = 100):
+    return _key_store.get_audit_log(limit=limit)
+
+
+# ── Enterprise: Gateway Webhook ───────────────────────────────────────────────
+
+@app.post("/api/gateway/webhook")
+async def webhook_gateway(req: WebhookRequest):
+    """
+    Generic inbound webhook — routes any text message through the MatClaw NL pipeline.
+    Slack slash commands, Discord webhooks, n8n, Zapier can all POST here.
+    """
+    request_id = str(uuid.uuid4())
+    run_req = RunRequest(
+        text=req.text, message=req.text,
+        session_id=req.chat_id,
+    )
+    output = ""
+    plots: list[str] = []
+
+    async def _collect():
+        nonlocal output, plots
+        async for chunk in run_nl_stream(run_req).__aiter__() if False else []:
+            pass
+
+    # Run via the existing /api/run endpoint (sync for simplicity)
+    t0 = time.time()
+    try:
+        from src.matclaw.api.nl_router import route_nl_message
+        skill, _ = route_nl_message(req.effective_text)
+        if skill in ("run_matlab",):
+            result = await asyncio.to_thread(
+                _runtime_registry.execute, "matlab", req.effective_text, {"task": req.effective_text}
+            )
+            output = result.output
+            plots = result.plots
+        else:
+            raw = _llm_chat(req.effective_text, system=MATCLAW_PERSONA, max_tokens=2048)
+            plan = _parse_llm_response(raw)
+            output = plan.get("reply") or raw[:500]
+    except Exception as exc:
+        output = f"Error: {exc}"
+
+    elapsed = int((time.time() - t0) * 1000)
+    return WebhookResponse(
+        text=output,
+        channel=req.channel,
+        chat_id=req.chat_id,
+        plots=plots,
+        request_id=request_id,
     )
 
 

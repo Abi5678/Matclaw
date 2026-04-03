@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, MicOff, Send, Cpu, Activity, RotateCcw, Eye, ChevronDown, Sparkles, FileText, Shield, Zap, Square } from 'lucide-react'
+import { Mic, MicOff, Send, Cpu, Activity, RotateCcw, Eye, ChevronDown, Sparkles, FileText, Shield, ShieldCheck, Zap, Square, Code2, Copy, Check, ChevronUp, AlertTriangle, CheckCircle, Loader2, Bot, ChevronRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -17,7 +17,8 @@ import ActivityBar, { type ActivityTab } from '../components/ActivityBar'
 import Sidebar from '../components/Sidebar'
 import WorkspaceTabs, { type WorkspaceTab } from '../components/WorkspaceTabs'
 import SettingsPanel from '../components/SettingsPanel'
-import FlowDashboard from '../components/FlowDashboard'
+import { derivePhases } from '../components/FlowDashboard'
+import { TaskStepStrip } from '../components/TaskSequence'
 import FileTree from '../components/FileTree'
 import StreamingMessage from '../components/StreamingMessage'
 import ThinkingBlock from '../components/ThinkingBlock'
@@ -90,6 +91,346 @@ function MetricsRow({ elapsed_ms }: { elapsed_ms?: number }) {
   )
 }
 
+// ── SentryStatusChip ─────────────────────────────────────────────────────────
+
+interface SentryStatusProps {
+  status: {
+    type: 'checking' | 'issue' | 'retrying' | 'done'
+    message: string
+    quality?: 'good' | 'poor'
+    attempt?: number
+    issues?: string[]
+  }
+}
+
+function SentryStatusChip({ status }: SentryStatusProps) {
+  const isGood = status.type === 'done' && status.quality === 'good'
+  const isPoor = status.type === 'done' && status.quality === 'poor'
+  const isIssue = status.type === 'issue'
+  const isActive = status.type === 'checking' || status.type === 'retrying'
+
+  const color = isGood ? 'var(--success)' : isPoor || isIssue ? 'var(--warning)' : 'var(--accent)'
+
+  return (
+    <div
+      className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs mt-1"
+      style={{ backgroundColor: 'var(--bg-surface)', border: `1px solid ${color}22`, color }}
+    >
+      <span className="flex-shrink-0 mt-0.5">
+        {isGood && <CheckCircle className="w-3.5 h-3.5" />}
+        {isPoor && <AlertTriangle className="w-3.5 h-3.5" />}
+        {isIssue && <AlertTriangle className="w-3.5 h-3.5" />}
+        {isActive && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+      </span>
+      <div className="flex flex-col gap-0.5">
+        <span className="font-medium">{status.message}</span>
+        {status.issues && status.issues.length > 0 && (
+          <ul className="list-disc list-inside" style={{ color: 'var(--text-muted)' }}>
+            {status.issues.map((iss, i) => <li key={i}>{iss}</li>)}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── AgentStepsPanel ───────────────────────────────────────────────────────────
+
+interface AgentStepEntry {
+  step: number
+  tool: string
+  label: string
+  status: 'running' | 'done' | 'error'
+  output?: string
+  plots?: string[]
+}
+
+function AgentStepsPanel({ steps, isLive }: { steps: AgentStepEntry[]; isLive?: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!steps.length) return null
+
+  const done   = steps.filter(s => s.status === 'done').length
+  const errors = steps.filter(s => s.status === 'error').length
+  const running = steps.find(s => s.status === 'running')
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden text-xs mt-1"
+      style={{ border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-surface)', maxWidth: '520px' }}
+    >
+      {/* Summary header */}
+      <button
+        className="w-full flex items-center justify-between px-3 py-2 gap-2"
+        style={{ backgroundColor: 'var(--bg-hover)' }}
+        onClick={() => setExpanded(e => !e)}
+      >
+        <div className="flex items-center gap-2">
+          <Bot className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--accent)' }} />
+          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Agentic — {steps.length} step{steps.length !== 1 ? 's' : ''}
+          </span>
+          {isLive && running && (
+            <span className="flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+              <Loader2 className="w-3 h-3 animate-spin" />
+              <span>{running.tool}…</span>
+            </span>
+          )}
+          {!isLive && (
+            <span style={{ color: errors ? 'var(--warning)' : 'var(--success)' }}>
+              {errors ? `${errors} error${errors>1?'s':''}` : `${done} completed`}
+            </span>
+          )}
+        </div>
+        <ChevronRight
+          className="w-3 h-3 transition-transform flex-shrink-0"
+          style={{
+            color: 'var(--text-muted)',
+            transform: expanded ? 'rotate(90deg)' : 'none',
+          }}
+        />
+      </button>
+
+      {/* Step list */}
+      {expanded && (
+        <div className="divide-y" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+          {steps.map((s) => (
+            <div key={`${s.step}-${s.tool}`} className="px-3 py-2 flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-4 h-4 flex items-center justify-center flex-shrink-0"
+                  style={{ color: s.status === 'done' ? 'var(--success)' : s.status === 'error' ? 'var(--warning)' : 'var(--accent)' }}
+                >
+                  {s.status === 'done'  && <CheckCircle className="w-3 h-3" />}
+                  {s.status === 'error' && <AlertTriangle className="w-3 h-3" />}
+                  {s.status === 'running' && <Loader2 className="w-3 h-3 animate-spin" />}
+                </span>
+                <span className="font-mono font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  <span style={{ color: 'var(--accent)' }}>{s.tool}</span>
+                </span>
+                <span style={{ color: 'var(--text-muted)' }} className="truncate">{s.label}</span>
+              </div>
+              {s.output && (
+                <pre
+                  className="px-2 py-1 rounded text-[10px] leading-relaxed overflow-x-auto"
+                  style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-muted)', maxHeight: '80px', overflow: 'auto' }}
+                >
+                  {s.output.slice(0, 400)}{s.output.length > 400 ? '…' : ''}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── CodeDoctorPanel ───────────────────────────────────────────────────────────
+
+interface DoctorLogEntry {
+  type: 'start' | 'issue' | 'fix' | 'rerun' | 'done'
+  round?: number
+  severity?: string
+  issueType?: string
+  description?: string
+  message?: string
+  fixed?: boolean
+  roundsTaken?: number
+}
+
+function CodeDoctorPanel({ log, isLive }: { log: DoctorLogEntry[]; isLive?: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!log.length) return null
+
+  const done    = log.find(e => e.type === 'done')
+  const issues  = log.filter(e => e.type === 'issue')
+  const fixes   = log.filter(e => e.type === 'fix')
+  const rerunning = isLive && log.some(e => e.type === 'rerun') && !done
+
+  const statusColor = done
+    ? (done.fixed ? 'var(--success)' : 'var(--warning)')
+    : 'var(--accent)'
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden text-xs mt-1"
+      style={{ border: `1px solid ${statusColor}33`, backgroundColor: 'var(--bg-surface)', maxWidth: '520px' }}
+    >
+      {/* Header */}
+      <button
+        className="w-full flex items-center justify-between px-3 py-2 gap-2"
+        style={{ backgroundColor: 'var(--bg-hover)' }}
+        onClick={() => setExpanded(e => !e)}
+      >
+        <div className="flex items-center gap-2">
+          <Wrench2 className="w-3.5 h-3.5 flex-shrink-0" style={{ color: statusColor }} />
+          <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>CodeDoctor</span>
+          {rerunning && (
+            <span className="flex items-center gap-1" style={{ color: 'var(--accent)' }}>
+              <Loader2 className="w-3 h-3 animate-spin" /> re-running…
+            </span>
+          )}
+          {done && (
+            <span style={{ color: statusColor }}>
+              {done.fixed ? `✓ Fixed in ${done.roundsTaken ?? '?'} round(s)` : '⚠ Manual review needed'}
+            </span>
+          )}
+          {!done && !rerunning && (
+            <span style={{ color: 'var(--accent)' }}>
+              {issues.length} issue(s) · {fixes.length} fix(es) applied
+            </span>
+          )}
+        </div>
+        <ChevronRight
+          className="w-3 h-3 transition-transform flex-shrink-0"
+          style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(90deg)' : 'none' }}
+        />
+      </button>
+
+      {/* Log entries */}
+      {expanded && (
+        <div className="divide-y" style={{ borderTop: `1px solid ${statusColor}22` }}>
+          {log.map((entry, idx) => {
+            const icon = entry.type === 'issue'
+              ? <AlertTriangle className="w-3 h-3 flex-shrink-0" style={{ color: entry.severity === 'critical' ? 'var(--error)' : 'var(--warning)' }} />
+              : entry.type === 'fix'
+              ? <CheckCircle className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--success)' }} />
+              : entry.type === 'rerun'
+              ? <Loader2 className="w-3 h-3 flex-shrink-0 animate-spin" style={{ color: 'var(--accent)' }} />
+              : entry.type === 'done'
+              ? (entry.fixed
+                  ? <CheckCircle className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--success)' }} />
+                  : <AlertTriangle className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--warning)' }} />)
+              : <Bot className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent)' }} />
+
+            const label = entry.type === 'issue'
+              ? `[${entry.severity?.toUpperCase()}] ${entry.issueType}: ${entry.description}`
+              : entry.description || entry.message || entry.type
+
+            return (
+              <div key={idx} className="flex items-start gap-2 px-3 py-1.5">
+                <span className="mt-0.5">{icon}</span>
+                <span style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>{label}</span>
+                {entry.round && (
+                  <span className="ml-auto flex-shrink-0 opacity-50">r{entry.round}</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Minimal wrench icon (lucide doesn't have Wrench2)
+function Wrench2({ className, style }: { className?: string; style?: React.CSSProperties }) {
+  return <Bot className={className} style={style} />
+}
+
+// ── CodePreviewCard ───────────────────────────────────────────────────────────
+
+interface CodePreviewCardProps {
+  code: string
+  filename: string
+  onOpenInEditor: (code: string, filename: string) => void
+}
+
+function CodePreviewCard({ code, filename, onOpenInEditor }: CodePreviewCardProps) {
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const allLines = code.split('\n')
+  const previewLines = allLines.slice(0, 4)
+  const hasMore = allLines.length > 4
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(code)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden text-xs font-mono mt-1"
+      style={{
+        border: '1px solid var(--border-subtle)',
+        backgroundColor: 'var(--bg-surface)',
+        maxWidth: '520px',
+      }}
+    >
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-3 py-2 gap-2"
+        style={{ borderBottom: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-hover)' }}
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Code2 className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent)' }} />
+          <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{filename}</span>
+          <span className="flex-shrink-0" style={{ color: 'var(--text-muted)' }}>· {allLines.length} lines</span>
+        </div>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 px-1.5 py-1 rounded transition-colors"
+            style={{ color: copied ? 'var(--accent)' : 'var(--text-muted)' }}
+            title="Copy code"
+            onMouseEnter={e => { if (!copied) e.currentTarget.style.color = 'var(--text-secondary)' }}
+            onMouseLeave={e => { if (!copied) e.currentTarget.style.color = 'var(--text-muted)' }}
+          >
+            {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          </button>
+          <button
+            onClick={() => onOpenInEditor(code, filename)}
+            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-all"
+            style={{
+              backgroundColor: 'var(--accent)',
+              color: 'var(--bg-base)',
+            }}
+            title="Open in Editor tab to edit and re-run"
+          >
+            <Code2 className="w-2.5 h-2.5" />
+            Edit &amp; Run
+          </button>
+        </div>
+      </div>
+
+      {/* Code body */}
+      <div
+        className="overflow-hidden"
+        style={{ maxHeight: expanded ? '320px' : 'none', overflowY: expanded ? 'auto' : 'hidden' }}
+      >
+        <pre
+          className="px-3 py-2.5 text-[11px] leading-relaxed overflow-x-auto"
+          style={{ color: 'var(--text-secondary)', margin: 0, tabSize: 2 }}
+        >
+          {expanded
+            ? code
+            : previewLines.join('\n') + (hasMore ? '\n…' : '')}
+        </pre>
+      </div>
+
+      {/* Expand / Collapse toggle */}
+      {hasMore && (
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="w-full flex items-center justify-center gap-1 py-1.5 text-[10px] transition-colors"
+          style={{
+            borderTop: '1px solid var(--border-subtle)',
+            color: 'var(--text-muted)',
+            backgroundColor: 'var(--bg-hover)',
+          }}
+          onMouseEnter={e => e.currentTarget.style.color = 'var(--accent)'}
+          onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+        >
+          {expanded
+            ? <><ChevronUp className="w-3 h-3" /> Collapse</>
+            : <><ChevronDown className="w-3 h-3" /> Show all {allLines.length} lines</>}
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 
 export default function ControlPlane() {
@@ -106,6 +447,18 @@ export default function ControlPlane() {
     setFollowMode(prev => {
       const next = !prev
       localStorage.setItem('matclaw-follow-mode', String(next))
+      return next
+    })
+  }, [])
+
+  const [sentryMode, setSentryMode] = useState(() => {
+    return localStorage.getItem('matclaw-sentry-mode') === 'true'
+  })
+
+  const toggleSentryMode = useCallback(() => {
+    setSentryMode(prev => {
+      const next = !prev
+      localStorage.setItem('matclaw-sentry-mode', String(next))
       return next
     })
   }, [])
@@ -200,6 +553,14 @@ export default function ControlPlane() {
     setWorkspaceTab('editor')
   }, [])
 
+  // Open generated MATLAB code directly in editor tab
+  const openCodeInEditor = useCallback((code: string, filename: string) => {
+    const file: import('../lib/sessions').ProjectFile = {
+      path: filename, filename, language: 'matlab', content: code, url: '',
+    }
+    openInEditor(file)
+  }, [openInEditor])
+
   // ── session state ──────────────────────────────────────────────
   const [session, setSession] = useState<Session>(() => getOrCreateActiveSession())
   const [sidebarRefresh, setSidebarRefresh] = useState(0)
@@ -224,6 +585,15 @@ export default function ControlPlane() {
   const [loading, setLoading] = useState(false)
   const [matlabOnline, setMatlabOnline] = useState<boolean | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Auto-grow textarea with content
+  useEffect(() => {
+    const ta = textareaRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
+  }, [input])
 
   const { isListening, transcript, isSupported, startListening, stopListening, resetTranscript } = useVoiceInput()
 
@@ -361,19 +731,20 @@ export default function ControlPlane() {
           if (followMode && data.plots?.length) {
             setWorkspaceTab('flow')
           }
+          // Capture code + store plots/files. Reply text comes via onDone.
           setMsgs(prev => {
             const idx = prev.findIndex(m => m.id === asstId)
             if (idx === -1) return prev
-            const existing = prev[idx].text || ''
-            // Append tool output text so agent node results appear in the chat body
-            const appendedText = data.output
-              ? `${existing}\n\n${data.output}`.trim()
-              : existing
+            const existing = prev[idx]
+            // Generate a timestamped filename for the editor tab
+            const codeFilename = data.code
+              ? (existing.codeFilename || `matlab_${Date.now()}.m`)
+              : existing.codeFilename
             return [...prev.slice(0, idx), {
-              ...prev[idx],
-              text: appendedText,
-              plots: [...(prev[idx].plots || []), ...(data.plots || [])],
-              files: [...(prev[idx].files || []), ...(data.files || [])],
+              ...existing,
+              plots: [...(existing.plots || []), ...(data.plots || [])],
+              files: [...(existing.files || []), ...(data.files || [])],
+              ...(data.code ? { code: data.code, codeFilename } : {}),
             }, ...prev.slice(idx + 1)]
           })
         },
@@ -382,12 +753,28 @@ export default function ControlPlane() {
           if (followMode) {
             setWorkspaceTab('flow')
           }
+          // Prefer done.reply (canonical); strip raw JSON wrapper if parser leaked it
+          const safeReply = (() => {
+            const r = data.reply || pendingRef.current.text || 'Done.'
+            const trimmed = r.trimStart()
+            if (trimmed.startsWith('{')) {
+              try {
+                const parsed = JSON.parse(trimmed)
+                return parsed.reply || r
+              } catch {
+                // Partial JSON — strip everything from first { onwards as fallback
+                const before = r.indexOf('{')
+                return before > 0 ? r.slice(0, before).trim() : 'Done.'
+              }
+            }
+            return r
+          })()
           setMsgs(prev => {
             const idx = prev.findIndex(m => m.id === asstId)
             if (idx === -1) return prev
             return [...prev.slice(0, idx), {
               ...prev[idx],
-              text: data.reply || pendingRef.current.text || 'Done.',
+              text: safeReply,
               thinking: pendingRef.current.thinking,
               skill: data.skill,
               elapsed_ms: data.elapsed_ms,
@@ -411,7 +798,64 @@ export default function ControlPlane() {
           })
           setLoading(false)
         },
-      }, execMode)
+        onSentryUpdate: (data) => {
+          setMsgs(prev => {
+            const idx = prev.findIndex(m => m.id === asstId)
+            if (idx === -1) return prev
+            const typeMap = { start: 'checking', issue: 'issue', done: 'done' } as const
+            const mappedType = typeMap[data.type] ?? 'checking'
+            return [...prev.slice(0, idx), {
+              ...prev[idx],
+              sentryStatus: {
+                type: mappedType as 'checking' | 'issue' | 'retrying' | 'done',
+                message: data.message,
+                quality: data.quality,
+                attempt: data.attempt,
+                issues: data.issues,
+              },
+            }, ...prev.slice(idx + 1)]
+          })
+        },
+        onAgentStep: (data) => {
+          setMsgs(prev => {
+            const idx = prev.findIndex(m => m.id === asstId)
+            if (idx === -1) return prev
+            const existing = prev[idx]
+            const steps = [...(existing.agentSteps || [])]
+            // mark any previous step as done if not already
+            const updated = steps.map(s => s.status === 'running' ? { ...s, status: 'done' as const } : s)
+            updated.push({ step: data.step, tool: data.tool, label: data.label, status: 'running' as const })
+            return [...prev.slice(0, idx), { ...existing, agentSteps: updated }, ...prev.slice(idx + 1)]
+          })
+        },
+        onAgentResult: (data) => {
+          setMsgs(prev => {
+            const idx = prev.findIndex(m => m.id === asstId)
+            if (idx === -1) return prev
+            const existing = prev[idx]
+            const steps = (existing.agentSteps || []).map(s =>
+              s.step === data.step && s.tool === data.tool
+                ? { ...s, status: (data.success ? 'done' : 'error') as 'done' | 'error', output: data.output, plots: data.plots }
+                : s
+            )
+            return [...prev.slice(0, idx), { ...existing, agentSteps: steps }, ...prev.slice(idx + 1)]
+          })
+        },
+        onAgentThought: (_step, text) => {
+          // Agent thoughts go into thinking panel, not the main text
+          pendingRef.current.thinking += (pendingRef.current.thinking ? '\n\n' : '') + text
+          flushPending()
+        },
+        onDoctorEvent: (data) => {
+          setMsgs(prev => {
+            const idx = prev.findIndex(m => m.id === asstId)
+            if (idx === -1) return prev
+            const existing = prev[idx]
+            const log = [...(existing.doctorLog || []), data]
+            return [...prev.slice(0, idx), { ...existing, doctorLog: log }, ...prev.slice(idx + 1)]
+          })
+        },
+      }, execMode, sentryMode, true)
     } catch (err) {
       setMsgs(prev => {
         const idx = prev.findIndex(m => m.id === asstId)
@@ -422,7 +866,7 @@ export default function ControlPlane() {
       })
       setLoading(false)
     }
-  }, [input, loading, session.id, msgs, stopListening, resetTranscript, setMsgs, streamRun, flushPending, followMode, execMode])
+  }, [input, loading, session.id, msgs, stopListening, resetTranscript, setMsgs, streamRun, flushPending, followMode, execMode, sentryMode])
 
   const handleStop = useCallback(() => {
     cancel()
@@ -448,14 +892,6 @@ export default function ControlPlane() {
   }
 
   const taskCount = listSessions().length
-
-  // ── derived: active assistant message for FlowDashboard ────────
-  const activeMessage = useMemo(() => {
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'assistant') return msgs[i]
-    }
-    return null
-  }, [msgs])
 
   // ── render ─────────────────────────────────────────────────────
   return (
@@ -541,6 +977,34 @@ export default function ControlPlane() {
                     MATLAB {matlabOnline === true ? 'online' : matlabOnline === false ? 'offline' : 'checking…'}
                   </span>
                 </button>
+                {/* Follow Mode — compact toggle in header */}
+                <button
+                  onClick={toggleFollowMode}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all"
+                  title={followMode ? 'Follow Mode: ON — view auto-switches to active tool' : 'Follow Mode: OFF'}
+                  style={{
+                    backgroundColor: followMode ? 'var(--accent-subtle)' : 'transparent',
+                    color: followMode ? 'var(--accent)' : 'var(--text-muted)',
+                    border: `1px solid ${followMode ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'transparent'}`,
+                  }}
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Follow</span>
+                </button>
+                {/* Sentry Mode — auto-check result quality and retry */}
+                <button
+                  onClick={toggleSentryMode}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all"
+                  title={sentryMode ? 'Sentry Mode: ON — auto-checks result quality and retries on failure' : 'Sentry Mode: OFF — click to enable quality checks'}
+                  style={{
+                    backgroundColor: sentryMode ? 'color-mix(in srgb, var(--success) 15%, transparent)' : 'transparent',
+                    color: sentryMode ? 'var(--success)' : 'var(--text-muted)',
+                    border: `1px solid ${sentryMode ? 'color-mix(in srgb, var(--success) 35%, transparent)' : 'transparent'}`,
+                  }}
+                >
+                  {sentryMode ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
+                  <span className="hidden sm:inline">Sentry</span>
+                </button>
                 <button
                   onClick={() => setMsgs(() => [])}
                   className="flex items-center gap-1 text-xs transition-colors"
@@ -553,18 +1017,7 @@ export default function ControlPlane() {
                 </button>
               </div>
             </header>
-
-            {/* Flow Dashboard (only on Flow tab) */}
-            {workspaceTab === 'flow' && activeMessage && (
-              <div className="px-5 pt-3 flex-shrink-0">
-                <FlowDashboard
-                  activeMessage={activeMessage}
-                  followMode={followMode}
-                  onToggleFollowMode={toggleFollowMode}
-                  toolLabel={pendingRef.current.toolLabel || undefined}
-                />
-              </div>
-            )}
+            {/* FlowDashboard removed — step status now shown inline in each message */}
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 scroll-smooth">
@@ -612,6 +1065,11 @@ export default function ControlPlane() {
 
                 {msgs.map(m => {
                   const isStreaming = m.role === 'assistant' && m.streamingPhase && m.streamingPhase !== 'done'
+                  // Derive step phases for the inline strip (for assistant messages only)
+                  const stepPhases = m.role === 'assistant'
+                    ? derivePhases(m, isStreaming ? pendingRef.current.toolLabel : undefined)
+                    : []
+                  const hasSteps = stepPhases.length > 0
 
                   return (
                     <motion.div
@@ -621,8 +1079,23 @@ export default function ControlPlane() {
                       transition={{ duration: 0.2 }}
                       className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
-                      <div className={`max-w-2xl flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                      <div className={`max-w-2xl flex flex-col gap-1.5 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                         {m.skill && m.role === 'assistant' && !isStreaming && <SkillBadge skill={m.skill} />}
+
+                        {/* ── Inline step strip (Option A) — replaces FlowDashboard card ── */}
+                        {hasSteps && (
+                          <TaskStepStrip phases={stepPhases} isLive={!!isStreaming} />
+                        )}
+
+                        {/* ── Agentic steps panel ── */}
+                        {m.role === 'assistant' && m.agentSteps && m.agentSteps.length > 0 && (
+                          <AgentStepsPanel steps={m.agentSteps} isLive={!!isStreaming} />
+                        )}
+
+                        {/* ── CodeDoctor panel ── */}
+                        {m.role === 'assistant' && m.doctorLog && m.doctorLog.length > 0 && (
+                          <CodeDoctorPanel log={m.doctorLog} isLive={!!isStreaming} />
+                        )}
 
                         {m.role === 'user' ? (
                           <div
@@ -670,6 +1143,18 @@ export default function ControlPlane() {
                             onOpenInEditor={openInEditor}
                           />
                         )}
+                        {/* Sentry status chip */}
+                        {m.role === 'assistant' && m.sentryStatus && (
+                          <SentryStatusChip status={m.sentryStatus} />
+                        )}
+                        {/* Code preview card — shown when MATLAB code was executed */}
+                        {m.role === 'assistant' && m.code && m.codeFilename && !isStreaming && (
+                          <CodePreviewCard
+                            code={m.code}
+                            filename={m.codeFilename}
+                            onOpenInEditor={openCodeInEditor}
+                          />
+                        )}
                         {!isStreaming && <MetricsRow elapsed_ms={m.elapsed_ms} />}
                       </div>
                     </motion.div>
@@ -708,21 +1193,46 @@ export default function ControlPlane() {
 
             {/* Input bar */}
             <div className="px-5 pb-4 pt-2 flex-shrink-0" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+              {/* Agentic mode banner — clearly visible above input */}
+              {execMode === 'agentic' && (
+                <div
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl mb-1.5 text-xs font-medium"
+                  style={{
+                    backgroundColor: 'var(--accent-subtle)',
+                    border: '1px solid color-mix(in srgb, var(--accent) 35%, transparent)',
+                    color: 'var(--accent)',
+                  }}
+                >
+                  <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span>Agentic mode — MatClaw will use tools autonomously to complete your request</span>
+                  <button
+                    className="ml-auto text-[10px] opacity-60 hover:opacity-100 transition-opacity"
+                    onClick={() => setExecMode('auto')}
+                  >
+                    Switch to Auto
+                  </button>
+                </div>
+              )}
               <div
-                className="rounded-2xl px-3 py-2 transition-colors"
+                className="rounded-2xl px-3 py-2 transition-all"
                 style={{
                   backgroundColor: 'var(--bg-input)',
-                  border: '1px solid var(--border-default)',
+                  border: `1px solid ${execMode === 'agentic' ? 'color-mix(in srgb, var(--accent) 50%, var(--border-default))' : 'var(--border-default)'}`,
+                  boxShadow: execMode === 'agentic' ? '0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent)' : 'none',
                 }}
               >
                 {/* Textarea + send row */}
                 <div className="flex items-end gap-2">
                   <textarea
+                    ref={textareaRef}
                     rows={1}
-                    className="flex-1 bg-transparent resize-none outline-none text-sm max-h-32 leading-relaxed"
+                    className="flex-1 bg-transparent resize-none outline-none text-sm leading-relaxed"
                     style={{
                       color: 'var(--text-primary)',
                       fontFamily: 'var(--font-ui)',
+                      minHeight: '1.5rem',
+                      maxHeight: '200px',
+                      overflowY: 'auto',
                     }}
                     placeholder="Ask MatClaw… (Shift+Enter for newline)"
                     value={input}
@@ -781,10 +1291,13 @@ export default function ControlPlane() {
                   <div className="relative" ref={modePickerRef}>
                     <button
                       onClick={() => setShowModePicker(p => !p)}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition"
-                      style={{ color: 'var(--text-secondary)' }}
-                      onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--bg-hover)')}
-                      onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all"
+                      style={{
+                        color: execMode === 'agentic' ? 'var(--accent)' : 'var(--text-secondary)',
+                        backgroundColor: execMode === 'agentic' ? 'var(--accent-subtle)' : 'transparent',
+                        border: `1px solid ${execMode === 'agentic' ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'transparent'}`,
+                        boxShadow: execMode === 'agentic' ? '0 0 8px color-mix(in srgb, var(--accent) 25%, transparent)' : 'none',
+                      }}
                     >
                       {EXEC_MODES.find(m => m.value === execMode)?.icon}
                       {EXEC_MODES.find(m => m.value === execMode)?.label}

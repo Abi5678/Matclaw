@@ -15,6 +15,19 @@ NL_MAP: list[tuple[set[str], str]] = [
       "what was", "what were", "log", "journal", "ran recently",
       "run recently", "did i run"}, "query_memory"),
 
+    # run_python — Python execution (before run_matlab to avoid "python fibonacci" going to MATLAB)
+    ({"python script", "python code", "run python", "execute python",
+      "write python", "import pandas", "import numpy", "import torch",
+      "pip install", "virtualenv", "django", "flask", "fastapi",
+      "machine learning", "scikit", "sklearn", "tensorflow", "pytorch",
+      "data science", "jupyter", "notebook"}, "run_python"),
+
+    # run_shell — shell / terminal commands
+    ({"bash script", "shell command", "terminal command", "run shell",
+      "run bash", "chmod", "chown", "grep -r", "find .", "ls -la",
+      "ssh ", "rsync", "curl ", "wget ", "cat /", "echo $",
+      "cron", "systemctl", "docker run", "kubectl"}, "run_shell"),
+
     # run_matlab — compute / plot / draw / simulate
     ({"plot", "draw", "graph", "chart", "visuali", "surf", "mesh", "scatter",
       "histogram", "bar chart", "pie chart", "contour", "heatmap",
