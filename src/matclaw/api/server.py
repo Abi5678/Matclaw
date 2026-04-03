@@ -790,8 +790,7 @@ def _sanitize_matlab_code(code: str) -> str:
     )
 
     # 10: Fix 'FaceColor', 'gray' -> [0.5 0.5 0.5]
-    code = _re.sub(r"'FaceColor'\s*,\s*'gray'", "'FaceColor', [0.5 0.5 0.5]", code, flags=_re.IGNORECASE)
-    code = _re.sub(r"'Color'\s*,\s*'gray'", "'Color', [0.5 0.5 0.5]", code, flags=_re.IGNORECASE)
+    code = _re.sub(r"'(FaceColor|EdgeColor|Color|MarkerFaceColor|MarkerEdgeColor)'\s*,\s*'gray'", r"'\1', [0.5 0.5 0.5]", code, flags=_re.IGNORECASE)
 
     return code
 
