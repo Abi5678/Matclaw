@@ -12,6 +12,7 @@ __pycache__/
 .matclaw_chromadb/
 *.sqlite3
 data/plots/
+plots/
 src/matclaw.egg-info/
 src/matclaw/skills/report_generator/reports/
 
