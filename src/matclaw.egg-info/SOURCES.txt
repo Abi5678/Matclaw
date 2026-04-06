@@ -26,6 +26,8 @@ src/matclaw/config/__init__.py
 src/matclaw/config/base_config.py
 src/matclaw/config/logging_config.py
 src/matclaw/core/__init__.py
+src/matclaw/core/agentic_loop.py
+src/matclaw/core/code_doctor.py
 src/matclaw/core/experiment.py
 src/matclaw/core/heartbeat.py
 src/matclaw/core/job_manager.py
@@ -50,6 +52,7 @@ src/matclaw/llm/llm_client.py
 src/matclaw/llm/nemotron_client.py
 src/matclaw/llm/tools.py
 src/matclaw/matlab/__init__.py
+src/matclaw/matlab/batch_runner.py
 src/matclaw/matlab/matlab_bridge.py
 src/matclaw/mcp/__init__.py
 src/matclaw/mcp/server.py
@@ -79,7 +82,9 @@ src/matclaw/skills/workspace_auditor/logic.py
 src/matclaw/tools/__init__.py
 src/matclaw/tools/base.py
 src/matclaw/tools/registry.py
+src/matclaw/tools/file_ops/__init__.py
 src/matclaw/tools/file_ops/tool.py
+src/matclaw/tools/web_fetch/__init__.py
 src/matclaw/tools/web_fetch/tool.py
 src/matclaw/vision/__init__.py
 src/matclaw/vision/analyst.py

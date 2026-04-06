@@ -1,44 +1,40 @@
-"""Web fetch tool — HTTP GET/POST for any URL."""
-from __future__ import annotations
-
+from typing import Any
 import httpx
-
-from src.matclaw.tools.base import BaseTool, ToolManifest, ToolParam, ToolContext, ToolResult
-
+from bs4 import BeautifulSoup
+from matclaw.tools.base import BaseTool, ToolManifest, ToolParam, ToolContext, ToolResult
 
 class WebFetchTool(BaseTool):
     manifest = ToolManifest(
         name="web_fetch",
-        description="Fetch content from a URL via HTTP GET. Returns the response body (truncated to 4000 chars).",
+        description="Fetch content from a URL via HTTP GET and parse it to raw text.",
+        version="0.1.0",
         runtime="python",
         inputs={
-            "url": ToolParam(type="string", description="URL to fetch"),
-            "timeout": ToolParam(
-                type="integer", description="Request timeout in seconds",
-                required=False, default=10,
-            ),
+            "url": ToolParam(type="string", description="The full URL to fetch."),
         },
-        outputs={
-            "content": ToolParam(type="string", description="Response body text"),
-            "status_code": ToolParam(type="integer", description="HTTP status code"),
-        },
-        tags=["web", "http", "fetch"],
     )
 
-    async def run(self, inputs: dict, context: ToolContext) -> ToolResult:
-        url = inputs.get("url", "")
-        timeout = int(inputs.get("timeout", 10))
+    async def run(self, inputs: dict[str, Any], context: ToolContext) -> ToolResult:
+        url = inputs.get("url")
         if not url:
-            return ToolResult(success=False, error="url is required")
+            return ToolResult(success=False, error="URL is required")
+            
         try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(url, timeout=timeout, follow_redirects=True)
-                return ToolResult(
-                    success=True,
-                    output={"content": r.text[:4000], "status_code": r.status_code},
-                )
-        except Exception as exc:
-            return ToolResult(success=False, error=str(exc))
-
+            async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                
+            text = resp.text
+            # Basic HTML stripping if content type is html
+            if "text/html" in resp.headers.get("content-type", "").lower():
+                try:
+                    soup = BeautifulSoup(text, "html.parser")
+                    text = soup.get_text(separator="\n", strip=True)
+                except ImportError:
+                    pass
+                
+            return ToolResult(success=True, output=text[:10000])  # limit output length
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
 
 tool = WebFetchTool()

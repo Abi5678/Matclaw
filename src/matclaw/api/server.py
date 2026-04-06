@@ -510,28 +510,42 @@ def _sentry_retry_code(original_request: str, original_code: str, issues: list[s
     )
     return _llm_chat(prompt, system=MATCLAW_PERSONA)
 
-# Connect to the running MATLAB session on startup
-logger.info("Connecting to MATLAB session...")
-try:
-    bridge.start()
-    if bridge.is_healthy():
-        logger.info("MATLAB connected successfully.")
-    else:
-        # Try connecting to any available shared session
-        import matlab.engine as _me  # type: ignore
-        sessions = _me.find_matlab()
-        if sessions:
-            bridge.settings.session_name = sessions[0]
-            bridge.start()
-            logger.info("Connected to shared MATLAB session: %s", sessions[0])
-        else:
-            logger.warning("No MATLAB session found — bridge will retry on first request.")
-except Exception as _e:
-    logger.warning("MATLAB startup skipped: %s", _e)
+
 
 # ── lifespan — starts/stops all background services ──────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Connect to MATLAB in a background thread to prevent startup hangs
+    logger.info("Connecting to MATLAB session (non-blocking)...")
+    try:
+        await asyncio.to_thread(bridge.start)
+        if bridge.is_healthy():
+            logger.info("MATLAB connected successfully.")
+            # Suppress ALL figure windows for the entire server session.
+            try:
+                from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
+                req = MatlabCallRequest(
+                    function="eval",
+                    args=["set(0, 'DefaultFigureVisible', 'off'); set(0, 'DefaultFigureWindowStyle', 'docked');"],
+                    nargout=0,
+                )
+                await asyncio.to_thread(bridge.call, req)
+                logger.info("MATLAB figure visibility: OFF (headless mode active)")
+            except Exception as _fig_e:
+                logger.debug("Could not set headless mode: %s", _fig_e)
+        else:
+            # Try connecting to any available shared session
+            import matlab.engine as _me  # type: ignore
+            sessions = await asyncio.to_thread(_me.find_matlab)
+            if sessions:
+                bridge.settings.session_name = sessions[0]
+                await asyncio.to_thread(bridge.start)
+                logger.info("Connected to shared MATLAB session: %s", sessions[0])
+            else:
+                logger.warning("No MATLAB session found — bridge will retry on first request.")
+    except Exception as _e:
+        logger.warning("MATLAB startup skipped or failed: %s", _e)
+
     # Register runtimes now that bridge is live
     _runtime_registry.register(MatlabRuntime(bridge, _run_matlab_and_collect))
     _runtime_registry.register(PythonRuntime(cwd=str(ROOT), venv_python=sys.executable))
@@ -688,11 +702,23 @@ def _run_via_script(code: str) -> tuple[bool, str]:
     try:
         escaped = script_path.replace("'", "''")
         matlab_cmd = f"evalc(\"run('{escaped}')\")"
-        req = MatlabCallRequest(function="eval", args=[matlab_cmd], nargout=1)
+        req = MatlabCallRequest(
+            function="eval",
+            args=[matlab_cmd],
+            nargout=1,
+            timeout_seconds=90.0,  # Hard per-script cap — CodeDoctor will simplify if needed
+        )
         result = bridge.call(req)
         if result.success:
             return True, str(result.result or "").strip()
-        return False, result.error or "Unknown MATLAB error"
+        # If it timed out, surface a clear actionable message
+        err = result.error or "Unknown MATLAB error"
+        if "timed out" in err.lower():
+            return False, (
+                "MATLAB script timed out (90s limit). "
+                "The simulation has too many iterations — reduce dt, shorten T, or vectorize loops."
+            )
+        return False, err
     finally:
         try:
             os.unlink(script_path)
@@ -796,55 +822,87 @@ def _sanitize_matlab_code(code: str) -> str:
 
 
 def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
-    """Run MATLAB code, collect stdout + plots, return (output_text, plot_urls)."""
+    """
+    Run MATLAB code, collect stdout + plots, return (output_text, plot_urls).
+
+    Execution strategy (two-tier):
+    1. BATCH MODE  — `matlab -batch` subprocess for any multi-line / simulation code.
+                     Completely isolated from the MATLAB desktop. Can never crash it.
+                     Timeout: 4 minutes (kills the subprocess, not the engine).
+    2. ENGINE MODE — shared Python engine for simple fast calls (<3 lines, no for-loops).
+                     Used only when batch mode is unavailable (MATLAB not in PATH).
+    """
+    from src.matclaw.matlab.batch_runner import run_batch, MATLAB_BIN
+
     ts = int(time.time())
     plot_name = f"plot_{ts}"
     plots: list[str] = []
 
     gif_url = _capture_animated_gif(code, plot_name)
-
     if gif_url:
         plots.append(gif_url)
-        output = f"Animation rendered: {gif_url.split('/')[-1]}"
-    else:
-        # Auto-repair common LLM code mistakes before execution
-        code = _sanitize_matlab_code(code)
-        # Wrap user code: force figures invisible (no pop-up windows, renders to memory),
-        # save any open figure, then close all so no ghost windows remain.
-        save_path = f"{PLOTS_DIR}/{plot_name}.png"
-        wrapped_code = (
-            # Make all new figures render off-screen
-            "set(0, 'DefaultFigureVisible', 'off');\n"
-            + code
-            + f"\ntry; figs = get(0, 'Children'); "
-            f"if ~isempty(figs); exportgraphics(figs(1), '{save_path}', 'Resolution', 150); end; "
-            f"catch; try; print(gcf, '-dpng', '-r150', '{save_path}'); catch; end; end\n"
-            f"close all;\n"
-            f"set(0, 'DefaultFigureVisible', 'on');\n"
+        return f"Animation rendered: {gif_url.split('/')[-1]}", plots
+
+    # Auto-repair common LLM MATLAB code mistakes
+    code = _sanitize_matlab_code(code)
+
+    # ── Tier 1: Batch subprocess (preferred for all complex simulations) ──────
+    is_complex = (
+        code.count("\n") > 2          # multi-line
+        or "for " in code             # has a loop
+        or "while " in code
+        or "figure" in code           # creates plots
+        or "subplot" in code
+        or len(code) > 200            # substantial script
+    )
+
+    if MATLAB_BIN and is_complex:
+        logger.info("MATLAB batch mode: executing in isolated subprocess (no desktop risk)")
+        ok, output, batch_plots = run_batch(
+            code=code,
+            plots_dir=str(PLOTS_DIR),
+            timeout=240.0,   # 4 min — kills subprocess only, never the engine
+            plot_name=plot_name,
         )
-        ok, stdout = _run_via_script(wrapped_code)
-        if not ok and stdout:
-            # Debug: log the failing code snippet around the error line
-            m_line = re.search(r'Line:\s*(\d+)', stdout)
-            if m_line:
-                err_line = int(m_line.group(1))
-                lines = wrapped_code.splitlines()
-                snippet_start = max(0, err_line - 3)
-                snippet = "\n".join(
-                    f"{snippet_start+i+1}: {l}" for i, l in enumerate(lines[snippet_start:err_line+1])
-                )
-                logger.warning("MATLAB error at line %d. Code snippet:\n%s", err_line, snippet)
-            # Return concise error — strip internal temp file paths from the message
-            clean_err = re.sub(r"File /[^\n]+\.m[^\n]*\n?", "", stdout).strip()
-            clean_err = re.sub(r"File /Applications/MATLAB[^\n]*\n?", "", clean_err).strip()
-            output = f"MATLAB error: {clean_err[:300]}" if clean_err else "MATLAB execution failed."
-        else:
-            output = stdout if stdout else f"MATLAB executed successfully: {req_text}"
+        plots.extend(batch_plots)
+        if not ok:
+            # Prepend indicator so CodeDoctor knows this is a batch error
+            output = f"MATLAB error: {output}"
+        return output, plots
 
-        new_plots = _save_plots_from_matlab()
-        plots.extend(new_plots)
+    # ── Tier 2: Shared engine (fast, for simple calls) ────────────────────────
+    logger.info("MATLAB engine mode: simple call via shared session")
+    save_path = f"{PLOTS_DIR}/{plot_name}.png"
+    wrapped_code = (
+        "set(0, 'DefaultFigureVisible', 'off');\n"
+        + code
+        + f"\ntry; figs = get(0, 'Children'); "
+        f"if ~isempty(figs); exportgraphics(figs(1), '{save_path}', 'Resolution', 150); end; "
+        f"catch; try; print(gcf, '-dpng', '-r150', '{save_path}'); catch; end; end\n"
+        f"close all;\n"
+    )
+    ok, stdout = _run_via_script(wrapped_code)
+    if not ok and stdout:
+        m_line = re.search(r'Line:\s*(\d+)', stdout)
+        if m_line:
+            err_line = int(m_line.group(1))
+            lines = wrapped_code.splitlines()
+            snippet_start = max(0, err_line - 3)
+            snippet = "\n".join(
+                f"{snippet_start+i+1}: {l}" for i, l in enumerate(lines[snippet_start:err_line+1])
+            )
+            logger.warning("MATLAB error at line %d. Code snippet:\n%s", err_line, snippet)
+        clean_err = re.sub(r"File /[^\n]+\.m[^\n]*\n?", "", stdout).strip()
+        clean_err = re.sub(r"File /Applications/MATLAB[^\n]*\n?", "", clean_err).strip()
+        output = f"MATLAB error: {clean_err[:300]}" if clean_err else "MATLAB execution failed."
+    else:
+        output = stdout if stdout else f"MATLAB executed successfully: {req_text}"
 
+    new_plots = _save_plots_from_matlab()
+    plots.extend(new_plots)
     return output, plots
+
+
 
 
 # ── endpoints ────────────────────────────────────────────────────────────────
@@ -904,8 +962,14 @@ async def terminal_ws(websocket: WebSocket):
         pass
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "matlab": bridge.is_healthy()}
+async def health():
+    try:
+        matlab_ok = await asyncio.wait_for(
+            asyncio.to_thread(bridge.is_healthy), timeout=2.0
+        )
+    except Exception:
+        matlab_ok = False
+    return {"status": "ok", "matlab": matlab_ok}
 
 
 # ── Vision Analysis Endpoint ───────────────────────────────────────────────────
@@ -1659,7 +1723,7 @@ async def run_nl_stream(req: RunRequest):
                 # Pluggable tools (web_fetch, file_ops, …)
                 plugin = tool_registry.get(tool_name)
                 if plugin:
-                    from src.matclaw.tools.base import ToolContext
+                    from matclaw.tools.base import ToolContext
                     ctx = ToolContext(tenant_id="default", request_id=req.session_id)
                     tr = await plugin.run(inputs, ctx)
                     out_str = str(tr.output) if tr.success else tr.error
@@ -1667,14 +1731,22 @@ async def run_nl_stream(req: RunRequest):
                     return out_str, plots
                 return f"Unknown tool: {tool_name}", []
 
-            async for event in run_agentic_loop(
+            # Wrap agentic loop with a keepalive ping every 20s
+            # so the browser SSE connection doesn't drop during long MATLAB runs.
+            agentic_gen = run_agentic_loop(
                 user_text=req.effective_text,
                 history=req.history,
                 settings=settings,
                 tool_registry=tool_registry,
                 runtime_dispatcher=_agentic_runtime_dispatch,
-            ):
+            )
+            last_ping = time.time()
+            async for event in agentic_gen:
                 yield event
+                # Send a keepalive comment every 20s
+                if time.time() - last_ping > 20:
+                    yield ": keepalive\n\n"
+                    last_ping = time.time()
             return
 
         try:
@@ -1755,7 +1827,8 @@ async def run_nl_stream(req: RunRequest):
                 fallback_skill, _ = route_nl_message(req.effective_text)
                 if fallback_skill in ("run_matlab",):
                     action = "run_matlab"
-                    plan["code"] = None
+                    plan.setdefault("code", None)
+
                 elif fallback_skill == "run_python":
                     action = "run_python"
                     plan["code"] = None
@@ -2291,37 +2364,27 @@ async def webhook_gateway(req: WebhookRequest):
     Slack slash commands, Discord webhooks, n8n, Zapier can all POST here.
     """
     request_id = str(uuid.uuid4())
-    run_req = RunRequest(
-        text=req.text, message=req.text,
-        session_id=req.chat_id,
-    )
     output = ""
     plots: list[str] = []
 
-    async def _collect():
-        nonlocal output, plots
-        async for chunk in run_nl_stream(run_req).__aiter__() if False else []:
-            pass
-
-    # Run via the existing /api/run endpoint (sync for simplicity)
     t0 = time.time()
     try:
-        from src.matclaw.api.nl_router import route_nl_message
-        skill, _ = route_nl_message(req.effective_text)
+        skill, _ = route_nl_message(req.text)
         if skill in ("run_matlab",):
             result = await asyncio.to_thread(
-                _runtime_registry.execute, "matlab", req.effective_text, {"task": req.effective_text}
+                _runtime_registry.execute, "matlab", req.text, {"task": req.text}
             )
             output = result.output
-            plots = result.plots
+            plots = getattr(result, "plots", [])
         else:
-            raw = _llm_chat(req.effective_text, system=MATCLAW_PERSONA, max_tokens=2048)
+            raw = await asyncio.to_thread(
+                _llm_chat, req.text, MATCLAW_PERSONA, None, 2048
+            )
             plan = _parse_llm_response(raw)
             output = plan.get("reply") or raw[:500]
     except Exception as exc:
         output = f"Error: {exc}"
 
-    elapsed = int((time.time() - t0) * 1000)
     return WebhookResponse(
         text=output,
         channel=req.channel,

@@ -13,7 +13,7 @@ from src.matclaw.config.base_config import MatlabSettings
 from src.matclaw.security.guardrail import guard_matlab_call
 
 logger = logging.getLogger(__name__)
-DEFAULT_MATLAB_CALL_TIMEOUT_SECONDS = 300.0
+DEFAULT_MATLAB_CALL_TIMEOUT_SECONDS = 90.0  # 90s hard cap per call; CodeDoctor simplifies if needed
 
 
 try:  # Pragmatic import guard so the project works without MATLAB installed.
@@ -283,10 +283,29 @@ class MatlabBridge:
                 failure = MatlabCallResult(success=False, error=str(exc))
 
         if timed_out:
-            try:
-                self.stop()
-            except Exception:
-                logger.exception("Failed stopping MATLAB engine after timeout.")
+            # Do NOT stop the engine — just cancel the hung thread and mark unhealthy.
+            # Start a background reconnect so MATLAB comes back online without user action.
+            logger.error(
+                "MATLAB call timed out after %.0fs. Attempting background reconnect...",
+                timeout_seconds,
+            )
+            def _reconnect():
+                import time
+                time.sleep(2)  # give MATLAB a moment to finish any internal cleanup
+                try:
+                    with self._lock:
+                        if self._state.engine is not None:
+                            # Engine is still alive — just mark healthy again
+                            self._state.healthy = True
+                            logger.info("MATLAB engine recovered after timeout (still connected).")
+                        else:
+                            self.start()
+                            logger.info("MATLAB engine restarted after timeout.")
+                except Exception as _rc_err:
+                    logger.warning("MATLAB reconnect failed: %s", _rc_err)
+            import threading as _thr
+            _thr.Thread(target=_reconnect, name="matlab-reconnect", daemon=True).start()
+
 
         # Outside the lock, optionally invoke the autonomous debugging loop.
         if self._debug_agent is not None and failure.error:

@@ -205,17 +205,21 @@ def diagnose(
                 description="Drone simulation may be missing real physical constants (g, mass, rho).",
             ))
 
-    # ── Performance / timeout risk ────────────────────────────────────────────
+    # ── Performance / timeout risk ──────────────────────────────────────────
     n_iter = result.estimated_iterations
-    if n_iter > 5000:
-        # Check if a for loop iterates over that range
-        has_for_loop = bool(re.search(r'\bfor\s+\w+\s*=\s*1\s*:\s*N\b', code))
-        if has_for_loop:
+    # Flag if estimated iterations OR if total_time/dt > 500 (timeout risk even without N)
+    if n_iter > 500 or (result.estimated_iterations == 0 and n_iter == 0):
+        # Re-check via T/dt directly
+        if n_iter > 500:
             result.issues.append(Issue(
                 type="timeout_risk",
                 severity="critical",
-                description=f"Estimated {n_iter:,} loop iterations with `for i=1:N` — will timeout. Must be vectorized.",
+                description=(
+                    f"Estimated {n_iter:,} loop iterations — will timeout in 90s. "
+                    "Must reduce dt (increase step size) or vectorize."
+                ),
             ))
+
 
     # ── Stale figures ─────────────────────────────────────────────────────────
     if not re.match(r'^\s*close\s+all', code, re.IGNORECASE | re.MULTILINE):
@@ -331,6 +335,12 @@ def apply_fixes(code: str, diagnosis: DiagnosisResult) -> tuple[str, list[str]]:
         code = re.sub(r"('(?:[^'\\]|\\.)*?)\\n((?:[^'\\]|\\.)*?')",
                       lambda m: m.group(1) + '  ' + m.group(2), code)
         fixes_applied.append(r"Flattened literal `\n` in MATLAB strings to spaces (use sprintf for newlines)")
+
+    # ── Fix: runtime_error — wrap in try/catch so error is readable ──────────
+    if "runtime_error" in issue_types and not fixes_applied:
+        if not re.match(r'^\s*try\b', code, re.IGNORECASE):
+            code = "try\n" + code + "\ncatch ME\n  fprintf('MatClaw runtime error: %s\\n', ME.message);\nend\n"
+            fixes_applied.append("Wrapped code in try/catch to surface the exact MATLAB runtime error message")
 
     # ── Fix: blank_plot or low_content when no other fix was found ───────────
     if ("blank_plot" in issue_types or "low_content" in issue_types) and not fixes_applied:

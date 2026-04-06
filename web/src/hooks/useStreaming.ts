@@ -68,11 +68,11 @@ export function useStreaming() {
     const controller = new AbortController()
     abortRef.current = controller
 
-    // 90-second timeout guard — prevents infinite "Thinking..." if server hangs
+    // 5-minute timeout guard — complex MATLAB simulations + physics take time
     const timeoutId = setTimeout(() => {
       controller.abort()
-      callbacks.onError('Request timed out after 90 seconds. The server may be busy.')
-    }, 90_000)
+      callbacks.onError('Request timed out after 5 minutes. The simulation may be too complex — try simplifying.')
+    }, 300_000)
 
     try {
       const response = await fetch(`${API}/api/run/stream`, {

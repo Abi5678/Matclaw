@@ -41,5 +41,26 @@
             "edit_file",
             "run_command"
         ]
+    },
+    {
+        "id": "test-agent",
+        "name": "Test Agent",
+        "system_prompt": "You are a test agent that simply confirms receipt of tasks.",
+        "trigger_condition": "When the user wants to test agent creation.",
+        "callable_by_others": true,
+        "allowed_tools": [
+            "run_matlab",
+            "shell_run"
+        ]
+    },
+    {
+        "id": "drone-sim",
+        "name": "Drone Simulator",
+        "system_prompt": "You are a MATLAB aerospace expert. Your primary task is to simulate quadcopter drone flight. Output raw trajectories as CSV-style text (Time, X, Y, Z). Use ODE45 or basic kinematic integration for physics.",
+        "trigger_condition": "When the mission requires generating flight data.",
+        "callable_by_others": true,
+        "allowed_tools": [
+            "run_matlab"
+        ]
     }
 ]
