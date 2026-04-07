@@ -27,7 +27,15 @@ export async function bootstrapFromServer(): Promise<void> {
     const resp = await fetch(`${API}/api/sessions`)
     if (!resp.ok) return
     const serverSessions: Session[] = await resp.json()
-    if (!serverSessions.length) return
+
+    if (serverSessions.length === 0) {
+      const local = readAll()
+      if (local.length <= 1) {
+        writeAll([])
+        localStorage.removeItem(ACTIVE_KEY)
+      }
+      return
+    }
 
     const local = readAll()
     const localById = Object.fromEntries(local.map(s => [s.id, s]))
@@ -91,7 +99,11 @@ export interface Message {
     status: 'running' | 'done' | 'error'
     output?: string
     plots?: string[]
+    quality?: Record<string, unknown>
   }>
+  /** Final run vs spec signals (agentic done event). */
+  executionSummary?: Record<string, unknown>
+  budgetSummary?: Record<string, unknown>
   doctorLog?: Array<{
     type: 'start' | 'issue' | 'fix' | 'rerun' | 'done'
     round?: number

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, MicOff, Send, Cpu, Activity, RotateCcw, Eye, ChevronDown, Sparkles, FileText, Shield, ShieldCheck, Zap, Square, Code2, Copy, Check, ChevronUp, AlertTriangle, CheckCircle, Loader2, Bot, ChevronRight } from 'lucide-react'
+import { Mic, MicOff, Send, Cpu, Activity, RotateCcw, Eye, ChevronDown, Sparkles, FileText, Shield, ShieldCheck, Zap, Square, Code2, Copy, Check, ChevronUp, AlertTriangle, CheckCircle, Loader2, Bot, ChevronRight, Stethoscope } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -9,7 +9,7 @@ import { useStreaming } from '../hooks/useStreaming'
 import type { Message, Session } from '../lib/sessions'
 import {
   getOrCreateActiveSession, getSession, saveSession,
-  createSession, setActiveSessionId, listSessions,
+  createSession, setActiveSessionId,
   autoTitle, bootstrapFromServer,
 } from '../lib/sessions'
 import { getSkillMeta } from '../lib/skills'
@@ -28,6 +28,8 @@ import CodeEditor from '../components/CodeEditor'
 import PipelineCanvas from '../components/PipelineCanvas'
 
 const API = 'http://localhost:8000'
+
+type MatlabUiStatus = 'checking' | 'online' | 'busy' | 'offline'
 
 interface Model {
   id: string
@@ -87,6 +89,69 @@ function MetricsRow({ elapsed_ms }: { elapsed_ms?: number }) {
     <div className="flex items-center gap-2 mt-1">
       <Activity className="w-3 h-3" style={{ color: 'var(--text-muted)' }} />
       <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{elapsed_ms}ms</span>
+    </div>
+  )
+}
+
+function ExecutionQualityRow({
+  execution,
+  budget,
+}: {
+  execution?: Record<string, unknown>
+  budget?: Record<string, unknown>
+}) {
+  if (!execution && !budget) return null
+  const runOk = execution?.run_success === true
+  const specOk = execution?.spec_satisfied === true
+  const violations = Array.isArray(execution?.violations) ? execution.violations as string[] : []
+  const within = budget?.within_wall_budget !== false
+  const wallAbort = budget?.wall_abort === true
+  const costAbort = budget?.cost_abort === true
+  const bms = typeof budget?.wall_clock_ms === 'number' ? budget.wall_clock_ms : null
+  const cap = typeof budget?.wall_clock_budget_ms === 'number' ? budget.wall_clock_budget_ms : null
+  const tok = typeof budget?.total_tokens === 'number' ? budget.total_tokens : null
+  const est = typeof budget?.estimated_cost_usd === 'number' ? budget.estimated_cost_usd : null
+  const border = specOk && runOk ? 'var(--success)22' : 'var(--warning)44'
+  return (
+    <div
+      className="mt-2 px-3 py-2 rounded-lg text-xs space-y-1"
+      style={{ backgroundColor: 'var(--bg-surface)', border: `1px solid ${border}` }}
+    >
+      <div className="font-medium" style={{ color: 'var(--text-primary)' }}>Run quality</div>
+      {execution && (
+        <div style={{ color: 'var(--text-muted)' }}>
+          <span>Execution: </span>
+          <span style={{ color: runOk ? 'var(--success)' : 'var(--error)' }}>{runOk ? 'ok' : 'failed'}</span>
+          <span className="mx-1">·</span>
+          <span>Spec: </span>
+          <span style={{ color: specOk ? 'var(--success)' : 'var(--warning)' }}>{specOk ? 'satisfied' : 'issues'}</span>
+        </div>
+      )}
+      {violations.length > 0 && (
+        <ul className="list-disc list-inside" style={{ color: 'var(--text-muted)' }}>
+          {violations.map((v, i) => <li key={i}>{v}</li>)}
+        </ul>
+      )}
+      {budget && (
+        <div style={{ color: 'var(--text-muted)' }} className="space-y-0.5">
+          <div>
+            Wall time
+            {bms != null ? ` ${bms} ms` : ''}
+            {cap != null ? ` / budget ${cap} ms` : ''}
+            {!within && ' — over budget'}
+            {wallAbort && ' (hard stop)'}
+          </div>
+          {(tok != null && tok > 0) && (
+            <div>LLM tokens (prompt+completion): {tok}</div>
+          )}
+          {(est != null && est > 0) && (
+            <div>
+              Est. USD: {est.toFixed(4)}
+              {costAbort && ' — soft cap stop'}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -463,6 +528,18 @@ export default function ControlPlane() {
     })
   }, [])
 
+  const [doctorMode, setDoctorMode] = useState(() => {
+    return localStorage.getItem('matclaw-doctor-mode') === 'true'
+  })
+
+  const toggleDoctorMode = useCallback(() => {
+    setDoctorMode(prev => {
+      const next = !prev
+      localStorage.setItem('matclaw-doctor-mode', String(next))
+      return next
+    })
+  }, [])
+
   // ── active model + model list ────────────────────────────────
   const [activeModelLabel, setActiveModelLabel] = useState('NVIDIA Nemotron Ultra 253B')
   const [modelList, setModelList] = useState<{id:string, label:string, active:boolean}[]>([])
@@ -493,7 +570,7 @@ export default function ControlPlane() {
         setShowModelPicker(false)
     }
     document.addEventListener('mousedown', handler)
-    return () => document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
   }, [])
 
   const switchModel = async (id: string) => {
@@ -583,7 +660,7 @@ export default function ControlPlane() {
   // ── other state ────────────────────────────────────────────────
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [matlabOnline, setMatlabOnline] = useState<boolean | null>(null)
+  const [matlabStatus, setMatlabStatus] = useState<MatlabUiStatus>('checking')
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -600,34 +677,51 @@ export default function ControlPlane() {
   useEffect(() => { if (transcript) setInput(transcript) }, [transcript])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
 
-  // health check
+  // health check — 8s client timeout; matlab_busy distinguishes long runs from disconnects
   const checkHealth = useCallback(() => {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 3000)
+    const timeoutId = setTimeout(() => controller.abort(), 8000)
 
     fetch(`${API}/health`, { signal: controller.signal })
       .then(r => r.json())
-      .then(d => {
+      .then((d: {
+        matlab?: boolean | { healthy?: boolean; busy?: boolean }
+        matlab_busy?: boolean
+      }) => {
         clearTimeout(timeoutId)
-        setMatlabOnline(!!d.matlab)
+        const raw = d.matlab
+        let connected = false
+        let busy = false
+        if (typeof raw === 'boolean') {
+          connected = raw
+          busy = !!d.matlab_busy
+        } else if (raw && typeof raw === 'object') {
+          connected = !!raw.healthy
+          busy = !!raw.busy
+        }
+        if (!connected) setMatlabStatus('offline')
+        else if (busy) setMatlabStatus('busy')
+        else setMatlabStatus('online')
       })
       .catch(() => {
         clearTimeout(timeoutId)
-        setMatlabOnline(false)
+        // If a request is in flight, backend may be busy with MATLAB — show 'busy' not 'offline'
+        setMatlabStatus(prev => (prev === 'online' || prev === 'busy') ? 'busy' : 'offline')
       })
   }, [])
 
   const reconnectMatlab = useCallback(async () => {
-    setMatlabOnline(null)
+    setMatlabStatus('checking')
     try { await fetch(`${API}/api/connect`, { method: 'POST' }) } catch (err) { console.error('Failed to reconnect MATLAB:', err) }
     checkHealth()
   }, [checkHealth])
 
   useEffect(() => {
     checkHealth()
-    const id = setInterval(checkHealth, 10000)
+    const intervalMs = loading ? 3000 : 10000
+    const id = setInterval(checkHealth, intervalMs)
     return () => clearInterval(id)
-  }, [checkHealth])
+  }, [checkHealth, loading])
 
   // Bootstrap sessions from server on mount (restores history after server restart)
   useEffect(() => {
@@ -656,6 +750,15 @@ export default function ControlPlane() {
   const rafRef = useRef(0)
   const streamMsgIdRef = useRef('')
 
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = 0
+      }
+    }
+  }, [])
+
   const flushPending = useCallback(() => {
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(() => {
@@ -671,15 +774,18 @@ export default function ControlPlane() {
     })
   }, [setMsgs])
 
-  // ── send ───────────────────────────────────────────────────────
-  const send = useCallback(async () => {
-    const text = input.trim()
-    if (!text || loading) return
+  // ── stream execution (chat send or editor "Run" with optional force_runtime) ──
+  const executeStream = useCallback(async (params: {
+    apiText: string
+    userDisplay: string
+    forceRuntime?: string
+  }) => {
+    const { apiText, userDisplay, forceRuntime } = params
+    if (!apiText || loading) return
     stopListening()
     resetTranscript()
-    setInput('')
 
-    const userMsg: Message = { id: crypto.randomUUID(), role: 'user', text, ts: Date.now() }
+    const userMsg: Message = { id: crypto.randomUUID(), role: 'user', text: userDisplay, ts: Date.now() }
     const asstId = crypto.randomUUID()
     const asstMsg: Message = {
       id: asstId, role: 'assistant', text: '', thinking: '',
@@ -694,7 +800,7 @@ export default function ControlPlane() {
     const history = msgs.slice(-10).map(m => ({ role: m.role, text: m.text }))
 
     try {
-      await streamRun(text, session.id, history, {
+      await streamRun(apiText, session.id, history, {
         onThinking: (token) => {
           pendingRef.current.thinking += token
           flushPending()
@@ -710,11 +816,10 @@ export default function ControlPlane() {
         },
         onToolStart: (data) => {
           pendingRef.current.toolLabel = data.label
-          // Follow Mode: auto-switch to relevant workspace tab
-          if (followMode) {
-            if (data.action === 'run_matlab') {
-              setWorkspaceTab('terminal')
-            }
+          // Follow Mode: only switch tabs when the visible surface matches the tool.
+          // MATLAB/Python run on the server bridge/runtimes — output streams in Flow, not the PTY Terminal tab.
+          if (followMode && data.action === 'run_shell') {
+            setWorkspaceTab('terminal')
           }
           setMsgs(prev => {
             const idx = prev.findIndex(m => m.id === asstId)
@@ -781,6 +886,8 @@ export default function ControlPlane() {
               plots: data.plots?.length ? data.plots : (prev[idx].plots || []),
               files: data.files?.length ? data.files : (prev[idx].files || []),
               streamingPhase: 'done' as const,
+              ...(data.execution ? { executionSummary: data.execution as Record<string, unknown> } : {}),
+              ...(data.budget ? { budgetSummary: data.budget as Record<string, unknown> } : {}),
             }, ...prev.slice(idx + 1)]
           })
           setLoading(false)
@@ -835,7 +942,13 @@ export default function ControlPlane() {
             const existing = prev[idx]
             const steps = (existing.agentSteps || []).map(s =>
               s.step === data.step && s.tool === data.tool
-                ? { ...s, status: (data.success ? 'done' : 'error') as 'done' | 'error', output: data.output, plots: data.plots }
+                ? {
+                    ...s,
+                    status: (data.success ? 'done' : 'error') as 'done' | 'error',
+                    output: data.output,
+                    plots: data.plots,
+                    ...(data.quality ? { quality: data.quality as Record<string, unknown> } : {}),
+                  }
                 : s
             )
             return [...prev.slice(0, idx), { ...existing, agentSteps: steps }, ...prev.slice(idx + 1)]
@@ -855,7 +968,7 @@ export default function ControlPlane() {
             return [...prev.slice(0, idx), { ...existing, doctorLog: log }, ...prev.slice(idx + 1)]
           })
         },
-      }, execMode, sentryMode, true)
+      }, execMode, sentryMode, doctorMode, forceRuntime ?? null)
     } catch (err) {
       setMsgs(prev => {
         const idx = prev.findIndex(m => m.id === asstId)
@@ -866,7 +979,14 @@ export default function ControlPlane() {
       })
       setLoading(false)
     }
-  }, [input, loading, session.id, msgs, stopListening, resetTranscript, setMsgs, streamRun, flushPending, followMode, execMode, sentryMode])
+  }, [loading, session.id, msgs, stopListening, resetTranscript, setMsgs, streamRun, flushPending, followMode, execMode, sentryMode, doctorMode])
+
+  const send = useCallback(async () => {
+    const text = input.trim()
+    if (!text || loading) return
+    setInput('')
+    await executeStream({ apiText: text, userDisplay: text })
+  }, [input, loading, executeStream])
 
   const handleStop = useCallback(() => {
     cancel()
@@ -891,7 +1011,7 @@ export default function ControlPlane() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
-  const taskCount = listSessions().length
+  const taskCount = msgs.length
 
   // ── render ─────────────────────────────────────────────────────
   return (
@@ -936,7 +1056,11 @@ export default function ControlPlane() {
             files={editorFiles}
             onRunMatlab={(code, filename) => {
               setWorkspaceTab('flow')
-              setInput(`Run this MATLAB code from ${filename}:\n\`\`\`matlab\n${code}\n\`\`\``)
+              void executeStream({
+                apiText: code,
+                userDisplay: `Run \`${filename}\` in MATLAB (direct)`,
+                forceRuntime: 'matlab',
+              })
             }}
           />
         ) : workspaceTab === 'flow' ? (
@@ -960,21 +1084,31 @@ export default function ControlPlane() {
               <div className="flex items-center gap-3">
                 {/* MATLAB status */}
                 <button
-                  onClick={matlabOnline === false ? reconnectMatlab : undefined}
+                  onClick={matlabStatus === 'offline' ? reconnectMatlab : undefined}
                   className="flex items-center gap-1.5 text-xs transition-colors"
-                  style={{ cursor: matlabOnline === false ? 'pointer' : 'default' }}
+                  style={{ cursor: matlabStatus === 'offline' ? 'pointer' : 'default' }}
+                  title={
+                    matlabStatus === 'busy'
+                      ? 'MATLAB is running code (engine or batch job)'
+                      : matlabStatus === 'online'
+                        ? 'MATLAB session connected'
+                        : matlabStatus === 'offline'
+                          ? 'Click to reconnect'
+                          : 'Checking MATLAB…'
+                  }
                 >
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${matlabOnline === null ? 'animate-pulse' : ''}`}
+                    className={`w-1.5 h-1.5 rounded-full ${matlabStatus === 'checking' ? 'animate-pulse' : ''}`}
                     style={{
-                      backgroundColor: matlabOnline === true ? 'var(--success)' :
-                        matlabOnline === false ? 'var(--error)' : 'var(--warning)'
+                      backgroundColor: matlabStatus === 'online' ? 'var(--success)' :
+                        matlabStatus === 'offline' ? 'var(--error)' :
+                          matlabStatus === 'busy' ? 'var(--warning)' : 'var(--warning)'
                     }}
                   />
                   <span style={{
-                    color: matlabOnline === false ? 'var(--error)' : 'var(--text-muted)'
+                    color: matlabStatus === 'offline' ? 'var(--error)' : 'var(--text-muted)'
                   }}>
-                    MATLAB {matlabOnline === true ? 'online' : matlabOnline === false ? 'offline' : 'checking…'}
+                    MATLAB {matlabStatus === 'online' ? 'online' : matlabStatus === 'offline' ? 'offline' : matlabStatus === 'busy' ? 'busy' : 'checking…'}
                   </span>
                 </button>
                 {/* Follow Mode — compact toggle in header */}
@@ -990,6 +1124,20 @@ export default function ControlPlane() {
                 >
                   <Eye className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">Follow</span>
+                </button>
+                {/* Code Doctor — extra MATLAB/LLM fix-up passes (off by default; can feel “stuck”) */}
+                <button
+                  onClick={toggleDoctorMode}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all"
+                  title={doctorMode ? 'Code Doctor: ON — auto-debug retries after MATLAB (slower)' : 'Code Doctor: OFF — recommended for faster plots'}
+                  style={{
+                    backgroundColor: doctorMode ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+                    color: doctorMode ? 'var(--accent)' : 'var(--text-muted)',
+                    border: `1px solid ${doctorMode ? 'color-mix(in srgb, var(--accent) 30%, transparent)' : 'transparent'}`,
+                  }}
+                >
+                  <Stethoscope className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Doctor</span>
                 </button>
                 {/* Sentry Mode — auto-check result quality and retry */}
                 <button
@@ -1156,6 +1304,9 @@ export default function ControlPlane() {
                           />
                         )}
                         {!isStreaming && <MetricsRow elapsed_ms={m.elapsed_ms} />}
+                        {!isStreaming && (m.executionSummary || m.budgetSummary) && (
+                          <ExecutionQualityRow execution={m.executionSummary} budget={m.budgetSummary} />
+                        )}
                       </div>
                     </motion.div>
                   )

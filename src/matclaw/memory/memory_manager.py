@@ -49,34 +49,38 @@ class MemoryManager:
         self._collection = None
         self._embed_fn = None
         self._embedding_model = embedding_model or "all-MiniLM-L6-v2"
+        self._init_lock = __import__("threading").Lock()
 
     def _ensure_client(self) -> None:
         if chromadb is None:
             raise RuntimeError("chromadb is not installed. pip install chromadb")
         if self._client is not None:
             return
-        self._persist_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(
-            path=str(self._persist_dir),
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        if embedding_functions:
-            try:
-                self._embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=self._embedding_model)
-            except Exception:
+        with self._init_lock:
+            if self._client is not None:
+                return
+            self._persist_dir.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(
+                path=str(self._persist_dir),
+                settings=ChromaSettings(anonymized_telemetry=False),
+            )
+            if embedding_functions:
                 try:
-                    self._embed_fn = embedding_functions.DefaultEmbeddingFunction()
+                    self._embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=self._embedding_model)
                 except Exception:
-                    self._embed_fn = None
-                    logger.warning("ChromaDB embedding not available; using hash-based fallback.")
-        else:
-            self._embed_fn = None
-        self._collection = self._client.get_or_create_collection(
-            name=self.COLLECTION_NAME,
-            embedding_function=self._embed_fn,
-            metadata={"description": "MatClaw skill artifacts and lessons learned"},
-        )
-        logger.info("MemoryManager ChromaDB ready at %s", self._persist_dir)
+                    try:
+                        self._embed_fn = embedding_functions.DefaultEmbeddingFunction()
+                    except Exception:
+                        self._embed_fn = None
+                        logger.warning("ChromaDB embedding not available; using hash-based fallback.")
+            else:
+                self._embed_fn = None
+            self._collection = self._client.get_or_create_collection(
+                name=self.COLLECTION_NAME,
+                embedding_function=self._embed_fn,
+                metadata={"description": "MatClaw skill artifacts and lessons learned"},
+            )
+            logger.info("MemoryManager ChromaDB ready at %s", self._persist_dir)
 
     # ------------------------------------------------------------------
     # Public properties so KnowledgeBase can share the ChromaDB client
@@ -110,7 +114,10 @@ class MemoryManager:
         else:
             # Fallback: deterministic pseudo-embedding from key+summary (low quality but no extra deps)
             h = hashlib.sha256((key + summary).encode()).hexdigest()
-            embeddings = [[float(int(h[i : i + 2], 16) % 256) / 256.0 for i in range(0, 32, 2)] * 8][:384]
+            vec = [float(int(h[i : i + 2], 16) % 256) / 256.0 for i in range(0, 64, 2)]
+            # Repeat to 384 dimensions to match common SentenceTransformer output
+            vec = (vec * 12)[:384]
+            embeddings = [vec]
         ids = [key]
         metadatas = [{**metadata, "key": key}]
         # ChromaDB metadata values must be str, int, float, bool
@@ -145,14 +152,15 @@ class MemoryManager:
                 include=["metadatas", "documents", "distances"],
             )
         else:
-            # No embedding fn: return recent by id (no semantic search)
+            logger.debug("No embedding function; returning recent results (non-semantic fallback).")
             results = self._collection.get(include=["metadatas", "documents"])
             metadatas = results.get("metadatas") or []
             documents = results.get("documents") or []
+            n = min(n_results, len(metadatas))
             results = {
-                "metadatas": [metadatas[-i] for i in range(1, min(n_results, len(metadatas)) + 1)],
-                "documents": [documents[-i] for i in range(1, min(n_results, len(documents)) + 1)],
-                "distances": [0.0] * min(n_results, len(metadatas)),
+                "metadatas": [metadatas[-i] for i in range(1, n + 1)] if n else [],
+                "documents": [documents[-i] for i in range(1, n + 1)] if n else [],
+                "distances": [-1.0] * n,
             }
         out = []
         metas = results.get("metadatas") or [[]]

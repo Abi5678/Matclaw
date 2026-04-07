@@ -38,7 +38,7 @@ export function derivePhases(msg: Message | null, toolLabel?: string): TaskPhase
     description: 'Analyzing request and retrieving context',
     icon: 'research',
     status: isDone || hasText || hasTool
-      ? (hasThinking ? 'completed' : 'completed')
+      ? 'completed'
       : phase === 'thinking'
         ? 'active'
         : 'pending',

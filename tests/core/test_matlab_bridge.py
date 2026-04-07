@@ -171,7 +171,8 @@ def test_health_set_true_on_success():
     assert bridge._state.healthy
 
 
-def test_health_false_on_timeout():
+def test_health_unchanged_on_timeout():
+    """Timeouts do not imply the MATLAB session died — session stays 'healthy'."""
     bridge = _make_bridge()
     bridge._state.healthy = True
 
@@ -191,4 +192,35 @@ def test_health_false_on_timeout():
         bridge.call(req)
 
     done.set()
-    assert not bridge._state.healthy
+    assert bridge._state.healthy
+
+
+def test_is_busy_during_call():
+    bridge = _make_bridge()
+    gate = threading.Event()
+    release = threading.Event()
+
+    def _blocked(*args, **kwargs):
+        gate.set()
+        release.wait(timeout=5.0)
+        return 1
+
+    req = MatlabCallRequest(function="eval", args=["1+1"], nargout=1, timeout_seconds=5.0)
+
+    with (
+        patch("src.matclaw.security.guardrail.guard_matlab_call") as mock_guard,
+        patch.object(bridge._state.engine, "eval", side_effect=_blocked),
+    ):
+        mock_guard.return_value = MagicMock(allow=True, reason="")
+
+        def _run():
+            bridge.call(req)
+
+        t = threading.Thread(target=_run)
+        t.start()
+        assert gate.wait(timeout=2.0)
+        assert bridge.is_busy() is True
+        release.set()
+        t.join(timeout=5.0)
+
+    assert bridge.is_busy() is False

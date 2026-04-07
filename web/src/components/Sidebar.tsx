@@ -40,7 +40,7 @@ export default function Sidebar({
   const handleDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
     deleteSession(id)
-    setSessions(listSessions())
+    setSessions(query ? searchSessions(query) : listSessions())
     if (id === activeSessionId) onNewSession()
   }
 

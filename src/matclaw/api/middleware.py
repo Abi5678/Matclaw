@@ -81,8 +81,9 @@ class EnterpriseMiddleware(BaseHTTPMiddleware):
                     headers={"X-Request-Id": request_id},
                 )
 
-            # Sliding-window rate limit (per key, per minute)
             now_mono = time.monotonic()
+            if len(_rate_windows) > _MAX_RATE_WINDOWS:
+                _rate_windows.clear()
             window = _rate_windows[ak.id]
             cutoff = now_mono - 60.0
             while window and window[0] < cutoff:
@@ -127,10 +128,14 @@ class EnterpriseMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_MAX_RATE_WINDOWS = 10_000
+
 class MetricsStore:
     """In-memory metrics with Prometheus-compatible snapshot."""
 
     def __init__(self) -> None:
+        import threading
+        self._lock = threading.Lock()
         self._req_count: dict[str, int] = defaultdict(int)
         self._err_count: dict[str, int] = defaultdict(int)
         self._durations: dict[str, list[int]] = defaultdict(list)
@@ -138,33 +143,35 @@ class MetricsStore:
 
     def record(self, path: str, method: str, status: int, duration_ms: int) -> None:
         key = f"{method}:{path}"
-        self._req_count[key] += 1
-        if status >= 400:
-            self._err_count[key] += 1
-        bucket = self._durations[key]
-        bucket.append(duration_ms)
-        if len(bucket) > 1000:
-            self._durations[key] = bucket[-500:]
+        with self._lock:
+            self._req_count[key] += 1
+            if status >= 400:
+                self._err_count[key] += 1
+            bucket = self._durations[key]
+            bucket.append(duration_ms)
+            if len(bucket) > 1000:
+                self._durations[key] = bucket[-500:]
 
     def snapshot(self) -> dict:
-        endpoints = {}
-        for key, count in self._req_count.items():
-            durations = self._durations.get(key, [1])
-            avg = sum(durations) / len(durations)
-            s = sorted(durations)
-            p95 = s[max(0, int(len(s) * 0.95) - 1)]
-            endpoints[key] = {
-                "requests": count,
-                "errors": self._err_count.get(key, 0),
-                "avg_duration_ms": round(avg, 1),
-                "p95_duration_ms": p95,
+        with self._lock:
+            endpoints = {}
+            for key, count in self._req_count.items():
+                durations = self._durations.get(key, [1])
+                avg = sum(durations) / len(durations)
+                s = sorted(durations)
+                p95 = s[max(0, int(len(s) * 0.95) - 1)]
+                endpoints[key] = {
+                    "requests": count,
+                    "errors": self._err_count.get(key, 0),
+                    "avg_duration_ms": round(avg, 1),
+                    "p95_duration_ms": p95,
+                }
+            return {
+                "uptime_seconds": int(time.time() - self._start_time),
+                "total_requests": sum(self._req_count.values()),
+                "total_errors": sum(self._err_count.values()),
+                "endpoints": endpoints,
             }
-        return {
-            "uptime_seconds": int(time.time() - self._start_time),
-            "total_requests": sum(self._req_count.values()),
-            "total_errors": sum(self._err_count.values()),
-            "endpoints": endpoints,
-        }
 
 
 __all__ = ["EnterpriseMiddleware", "MetricsStore"]

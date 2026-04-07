@@ -5,7 +5,7 @@ Endpoints:
   GET  /api/skills       — list available skills
   GET  /api/plots        — list saved plot files
   GET  /plots/{filename} — serve a plot image / GIF
-  GET  /health           — liveness check
+  GET  /health           — liveness + matlab session (matlab) and busy (matlab_busy)
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ from src.matclaw.gateways.webhook import WebhookRequest, WebhookResponse
 
 import uuid
 from datetime import datetime
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -79,11 +79,13 @@ state_tracker = AsyncStateTracker(str(ROOT / ".matclaw_async_state.json"))
 session_store = SessionStore(str(ROOT / ".matclaw_sessions.sqlite3"))
 pipeline_store = PipelineStore(str(ROOT / ".matclaw_pipelines.sqlite3"))
 _active_runs: dict[str, asyncio.Queue] = {}  # run_id → SSE event queue
+_headless_figure_task: asyncio.Task[None] | None = None  # deferred MATLAB GUI setup (must not block lifespan yield)
 
 # ── Enterprise singletons ────────────────────────────────────────────────────
 _key_store = APIKeyStore(str(ROOT / ".matclaw_auth.sqlite3"))
 _metrics = MetricsStore()
 _job_manager = JobManager(concurrency=2)
+_agentic_slot_semaphore = asyncio.Semaphore(max(1, settings.production.agentic_max_concurrent))
 
 # Runtime registry — populated after MATLAB bridge starts (see startup below)
 _runtime_registry = RuntimeRegistry()
@@ -513,26 +515,41 @@ def _sentry_retry_code(original_request: str, original_code: str, issues: list[s
 
 
 # ── lifespan — starts/stops all background services ──────────────────────────
+async def _apply_matlab_headless_figures() -> None:
+    """
+    Suppress figure windows for the server session. Runs **after** the HTTP server
+    is listening — a slow or stuck MATLAB eval must not block page load.
+    """
+    try:
+        if not bridge.is_healthy():
+            return
+        from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
+
+        req = MatlabCallRequest(
+            function="eval",
+            args=["set(0, 'DefaultFigureVisible', 'off'); set(0, 'DefaultFigureWindowStyle', 'docked');"],
+            nargout=0,
+        )
+        await asyncio.wait_for(
+            asyncio.to_thread(bridge.call, req),
+            timeout=120.0,
+        )
+        logger.info("MATLAB figure visibility: OFF (headless mode active)")
+    except asyncio.TimeoutError:
+        logger.warning("Headless MATLAB figure setup timed out after 120s; UI and API remain available.")
+    except Exception as _fig_e:
+        logger.debug("Could not set headless mode: %s", _fig_e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _headless_figure_task
     # Connect to MATLAB in a background thread to prevent startup hangs
     logger.info("Connecting to MATLAB session (non-blocking)...")
     try:
         await asyncio.to_thread(bridge.start)
         if bridge.is_healthy():
             logger.info("MATLAB connected successfully.")
-            # Suppress ALL figure windows for the entire server session.
-            try:
-                from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
-                req = MatlabCallRequest(
-                    function="eval",
-                    args=["set(0, 'DefaultFigureVisible', 'off'); set(0, 'DefaultFigureWindowStyle', 'docked');"],
-                    nargout=0,
-                )
-                await asyncio.to_thread(bridge.call, req)
-                logger.info("MATLAB figure visibility: OFF (headless mode active)")
-            except Exception as _fig_e:
-                logger.debug("Could not set headless mode: %s", _fig_e)
         else:
             # Try connecting to any available shared session
             import matlab.engine as _me  # type: ignore
@@ -556,7 +573,21 @@ async def lifespan(app: FastAPI):
     _heartbeat.start()
     logger.info("MatClaw enterprise daemon started. Runtimes: %s",
                 [r["name"] for r in _runtime_registry.list_runtimes()])
+
+    # Defer headless MATLAB eval until after yield — Uvicorn does not accept connections until yield.
+    async def _headless_after_bind() -> None:
+        await asyncio.sleep(0.05)
+        await _apply_matlab_headless_figures()
+
+    _headless_figure_task = asyncio.create_task(_headless_after_bind())
+
     yield
+
+    if _headless_figure_task and not _headless_figure_task.done():
+        _headless_figure_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _headless_figure_task
+    _headless_figure_task = None
     _heartbeat.stop()
     logger.info("MatClaw daemon stopped.")
 
@@ -606,7 +637,7 @@ class RunRequest(BaseModel):
     mode: str = "auto"  # "ask" | "auto" | "plan" | "agentic"
     force_runtime: str | None = None  # "matlab" | "python" | "shell" — bypasses NL routing
     sentry_mode: bool = False   # auto-check result quality and retry on failure
-    doctor_mode: bool = True    # run CodeDoctor auto-debug loop on bad results
+    doctor_mode: bool = False   # run CodeDoctor auto-debug loop (opt-in; can block server during retries)
 
     @property
     def effective_text(self) -> str:
@@ -640,15 +671,16 @@ def _capture_animated_gif(code: str, base_name: str) -> str | None:
     if "drawnow" not in code and ("for " not in code and "while " not in code):
         return None
 
-    frame_dir = PLOTS_DIR / f"_frames_{base_name}"
+    safe_base = re.sub(r'[^a-zA-Z0-9_-]', '_', base_name)[:60]
+    frame_dir = PLOTS_DIR / f"_frames_{safe_base}"
     frame_dir.mkdir(exist_ok=True)
 
     frame_dir_str = str(frame_dir).replace("'", "''")
+    sanitized_code = _sanitize_matlab_code(code)
     inject = (
         f"mc_frame_dir = '{frame_dir_str}';\n"
         "mc_frame_n = 0;\n"
     )
-    # Wrap every drawnow with a frame save
     instrumented = re.sub(
         r"drawnow\s*;?",
         lambda m: (
@@ -657,7 +689,7 @@ def _capture_animated_gif(code: str, base_name: str) -> str | None:
             "exportgraphics(gcf, fullfile(mc_frame_dir, sprintf('frame_%04d.png', mc_frame_n)), 'Resolution', 72); "
             "end"
         ),
-        code,
+        sanitized_code,
     )
     _run_via_script(inject + instrumented)
 
@@ -694,9 +726,28 @@ def _run_via_script(code: str) -> tuple[bool, str]:
     import tempfile
     from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
 
+    # Write as ASCII-only — MATLAB parser rejects non-ASCII characters
+    # (smart quotes, em-dashes, pi symbol, arrows, etc.) in .m files,
+    # even when inside string literals. Strip the entire code block.
+    ascii_code = (
+        code
+        .replace('\u2014', '-')   # em-dash -> hyphen
+        .replace('\u2013', '-')   # en-dash -> hyphen
+        .replace('\u2018', "'")   # left single quote -> apostrophe
+        .replace('\u2019', "'")   # right single quote -> apostrophe
+        .replace('\u201c', '"')   # left double quote -> quote
+        .replace('\u201d', '"')   # right double quote -> quote
+        .replace('\u03c0', 'pi')  # π -> pi
+        .replace('\u03c9', 'omega')  # ω -> omega
+        .replace('\u03b1', 'alpha')  # α -> alpha
+        .replace('\u2192', '->')  # → -> ->
+        .replace('\u00b2', '^2')  # ² -> ^2
+        .replace('\u00b3', '^3')  # ³ -> ^3
+        .encode("ascii", errors="replace").decode("ascii")
+    )
     with tempfile.NamedTemporaryFile(suffix=".m", delete=False, mode="w",
-                                     encoding="utf-8", errors="replace") as f:
-        f.write(code)
+                                     encoding="ascii", errors="replace") as f:
+        f.write(ascii_code)
         script_path = f.name.replace("\\", "/")
 
     try:
@@ -821,20 +872,56 @@ def _sanitize_matlab_code(code: str) -> str:
     return code
 
 
+def _should_use_matlab_batch(code: str) -> bool:
+    """
+    Whether to run via `matlab -batch` subprocess vs the shared engine.
+
+    Batch spawns a **new MATLAB process** (cold start often 30–120s) — it must
+    not be used for routine plotting. The old heuristic treated almost every plot
+    as "complex" (multi-line, `figure`, `subplot`, len>200), which caused simple
+    surf/mesh plots to hang or time out while users saw "MATLAB offline" / busy.
+
+    Reserve batch for long scripts, loops, ODEs, and Simulink-style runs.
+    Set MATCLAW_MATLAB_FORCE_BATCH=1 to always batch (debug).
+    """
+    if os.environ.get("MATCLAW_MATLAB_FORCE_BATCH", "").lower() in ("1", "true", "yes"):
+        return True
+    # Keeps FastAPI responsive: in-process Engine can hold the GIL during eval.
+    if os.environ.get("MATCLAW_MATLAB_SUBPROCESS_ONLY", "").lower() in ("1", "true", "yes"):
+        return True
+    c = code.strip()
+    if not c:
+        return False
+    nl = c.count("\n")
+    if nl > 80 or len(c) > 20000:
+        return True
+    if re.search(r"\bfor\s+", c) or re.search(r"\bwhile\s+", c):
+        return True
+    if re.search(r"\bode45\s*\(", c, re.IGNORECASE) or re.search(r"\bode\d+\s*\(", c, re.IGNORECASE):
+        return True
+    if re.search(r"\bsim\s*\(", c) or "simulink" in c.lower():
+        return True
+    if "parfor" in c:
+        return True
+    return False
+
+
 def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
     """
     Run MATLAB code, collect stdout + plots, return (output_text, plot_urls).
 
     Execution strategy (two-tier):
-    1. BATCH MODE  — `matlab -batch` subprocess for any multi-line / simulation code.
-                     Completely isolated from the MATLAB desktop. Can never crash it.
-                     Timeout: 4 minutes (kills the subprocess, not the engine).
-    2. ENGINE MODE — shared Python engine for simple fast calls (<3 lines, no for-loops).
-                     Used only when batch mode is unavailable (MATLAB not in PATH).
+    1. BATCH MODE  — `matlab -batch` subprocess for heavy / risky work (loops, ODEs,
+                     very long scripts). Isolated; slow cold start per run.
+    2. ENGINE MODE — shared MATLAB Engine for Python (default for plots & short scripts).
     """
-    from src.matclaw.matlab.batch_runner import run_batch, MATLAB_BIN
+    from src.matclaw.matlab.batch_runner import (
+        MATLAB_BIN,
+        run_batch,
+        split_matlab_script_and_local_functions,
+    )
 
-    ts = int(time.time())
+    ts = f"{int(time.time())}_{uuid.uuid4().hex[:6]}"
     plot_name = f"plot_{ts}"
     plots: list[str] = []
 
@@ -846,24 +933,16 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
     # Auto-repair common LLM MATLAB code mistakes
     code = _sanitize_matlab_code(code)
 
-    # ── Tier 1: Batch subprocess (preferred for all complex simulations) ──────
-    is_complex = (
-        code.count("\n") > 2          # multi-line
-        or "for " in code             # has a loop
-        or "while " in code
-        or "figure" in code           # creates plots
-        or "subplot" in code
-        or len(code) > 200            # substantial script
-    )
-
-    if MATLAB_BIN and is_complex:
+    # ── Tier 1: Batch subprocess (heavy simulations only) ─────────────────────
+    if MATLAB_BIN and _should_use_matlab_batch(code):
         logger.info("MATLAB batch mode: executing in isolated subprocess (no desktop risk)")
-        ok, output, batch_plots = run_batch(
-            code=code,
-            plots_dir=str(PLOTS_DIR),
-            timeout=240.0,   # 4 min — kills subprocess only, never the engine
-            plot_name=plot_name,
-        )
+        with bridge.external_busy():
+            ok, output, batch_plots = run_batch(
+                code=code,
+                plots_dir=str(PLOTS_DIR),
+                timeout=240.0,   # 4 min — kills subprocess only, never the engine
+                plot_name=plot_name,
+            )
         plots.extend(batch_plots)
         if not ok:
             # Prepend indicator so CodeDoctor knows this is a batch error
@@ -871,15 +950,70 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
         return output, plots
 
     # ── Tier 2: Shared engine (fast, for simple calls) ────────────────────────
+    # If the engine was just restarted from a previous timeout, wait a moment and
+    # fall back to batch (engine may not be fully up yet).
+    if bridge.needs_restart() and MATLAB_BIN:
+        logger.info("MATLAB engine still restarting after timeout — using batch fallback")
+        with bridge.external_busy():
+            ok, output, batch_plots = run_batch(
+                code=code,
+                plots_dir=str(PLOTS_DIR),
+                timeout=240.0,
+                plot_name=plot_name,
+            )
+        plots.extend(batch_plots)
+        if not ok:
+            output = f"MATLAB error: {output}"
+        return output, plots
+
+    # ── Auto-reconnect if bridge dropped (e.g. after a crash or non-ASCII error) ─
+    if not bridge.is_healthy():
+        logger.warning("MATLAB bridge unhealthy — attempting reconnect before execution...")
+        try:
+            bridge.start()
+            if bridge.is_healthy():
+                logger.info("MATLAB bridge reconnected successfully.")
+            else:
+                import matlab.engine as _me
+                sessions = _me.find_matlab()
+                if sessions:
+                    bridge.settings.session_name = sessions[0]
+                    bridge.start()
+                    logger.info("Reconnected to shared session: %s", sessions[0])
+        except Exception as _reconnect_err:
+            logger.warning("MATLAB reconnect failed: %s", _reconnect_err)
+        if not bridge.is_healthy():
+            return "MATLAB is offline — please reconnect the MATLAB bridge.", []
+
     logger.info("MATLAB engine mode: simple call via shared session")
     save_path = f"{PLOTS_DIR}/{plot_name}.png"
+    save_path_esc = save_path.replace("'", "''")
+    # Use saveas + print (more reliable headless on macOS); exportgraphics can hang
+    # waiting for display context even with DefaultFigureVisible=off.
+    # NOTE: Use ASCII-safe quotes only to prevent MATLAB parsing errors
+    # Local functions must stay at EOF — insert capture boilerplate before them only.
+    main_body, local_fns = split_matlab_script_and_local_functions(
+        code.encode("ascii", errors="replace").decode("ascii")
+    )
+    engine_footer = (
+        "\ntry\n"
+        f"  figs = get(0, 'Children');\n"
+        f"  if ~isempty(figs)\n"
+        f"    saveas(figs(1), '{save_path_esc}', 'png');\n"
+        f"    if ~exist('{save_path_esc}', 'file')\n"
+        f"      print(figs(1), '-dpng', '-r100', '{save_path_esc}');\n"
+        f"    end\n"
+        f"  end\n"
+        f"catch matclaw_err\n"
+        f"  try; print(gcf, '-dpng', '-r100', '{save_path_esc}'); catch; end;\n"
+        f"end\n"
+        f"close all;\n"
+    )
     wrapped_code = (
         "set(0, 'DefaultFigureVisible', 'off');\n"
-        + code
-        + f"\ntry; figs = get(0, 'Children'); "
-        f"if ~isempty(figs); exportgraphics(figs(1), '{save_path}', 'Resolution', 150); end; "
-        f"catch; try; print(gcf, '-dpng', '-r150', '{save_path}'); catch; end; end\n"
-        f"close all;\n"
+        + main_body
+        + engine_footer
+        + (("\n" + local_fns) if local_fns else "")
     )
     ok, stdout = _run_via_script(wrapped_code)
     if not ok and stdout:
@@ -914,7 +1048,10 @@ async def terminal_ws(websocket: WebSocket):
     if pid == 0:
         os.environ["TERM"] = "xterm-256color"
         shell = os.environ.get("SHELL", "/bin/bash")
-        os.execv(shell, [shell])
+        try:
+            os.execv(shell, [shell])
+        except Exception:
+            os._exit(127)
     
     loop = asyncio.get_running_loop()
     
@@ -926,10 +1063,10 @@ async def terminal_ws(websocket: WebSocket):
                     break
                 await websocket.send_text(data.decode("utf-8", errors="replace"))
         except Exception as e:
-            logger.error(f"PTY read error: {e}")
+            logger.debug("PTY read ended: %s", e)
             try:
                 await websocket.close()
-            except:
+            except Exception:
                 pass
 
     async def read_from_ws():
@@ -945,9 +1082,9 @@ async def terminal_ws(websocket: WebSocket):
                     except Exception as resize_e:
                         logger.error(f"Resize error: {resize_e}")
                 else:
-                    os.write(fd, data.encode("utf-8"))
+                    await loop.run_in_executor(None, os.write, fd, data.encode("utf-8"))
         except Exception as e:
-            logger.error(f"WS read error: {e}")
+            logger.debug("WS read ended: %s", e)
 
     t1 = asyncio.create_task(read_from_pty())
     t2 = asyncio.create_task(read_from_ws())
@@ -958,18 +1095,46 @@ async def terminal_ws(websocket: WebSocket):
             t.cancel()
     try:
         os.close(fd)
-    except:
+    except Exception:
+        pass
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except Exception:
         pass
 
 @app.get("/health")
 async def health():
+    """
+    Liveness + MATLAB session/busy. Reads are O(1); do not use a thread pool so
+    health checks stay accurate under load (no false 'offline' from executor delay).
+
+    When MATLAB is offline or the LLM has no API key, `degraded` is true — callers
+    should route traffic away or show limited mode (graceful degradation).
+    """
     try:
-        matlab_ok = await asyncio.wait_for(
-            asyncio.to_thread(bridge.is_healthy), timeout=2.0
-        )
-    except Exception:
-        matlab_ok = False
-    return {"status": "ok", "matlab": matlab_ok}
+        matlab_status = bridge.get_status_detail()
+    except Exception as exc:
+        logger.error(f"Health check failed: {exc}")
+        matlab_status = {"healthy": False, "error": str(exc)}
+
+    from src.matclaw.llm.llm_client import resolve_api_key
+
+    prov = (settings.llm.provider or "").lower().strip()
+    llm_key = resolve_api_key(settings.llm.provider, settings.llm.api_key)
+    llm_status = {
+        "provider": prov,
+        "api_key_configured": bool(llm_key),
+    }
+    matlab_ok = bool(matlab_status.get("healthy"))
+    llm_ok = llm_status["api_key_configured"]
+    degraded = (settings.matlab.enabled and not matlab_ok) or not llm_ok
+    return {
+        "status": "degraded" if degraded else "ok",
+        "degraded": degraded,
+        "matlab": matlab_status,
+        "llm": llm_status,
+        "long_term_memory_enabled": bool(getattr(settings, "long_term_memory", None) and settings.long_term_memory.enabled),
+    }
 
 
 # ── Vision Analysis Endpoint ───────────────────────────────────────────────────
@@ -978,13 +1143,13 @@ async def health():
 async def analyze_plot_endpoint(body: dict):
     """Run LLM-based analysis on a plot image using the existing vision analyst."""
     plot_path: str = body.get("plot_path", "")
-    # Accept URLs like "/plots/plot_123.png" or just a filename
-    rel = plot_path.lstrip("/")
-    if not rel.startswith("plots/"):
-        rel = f"plots/{rel}"
-    full_path = ROOT / rel
+    # Accept URLs like "/plots/plot_123.png" or just a filename — use basename to prevent traversal
+    basename = os.path.basename(plot_path)
+    full_path = (PLOTS_DIR / basename).resolve()
+    if not full_path.is_relative_to(PLOTS_DIR.resolve()):
+        return {"analysis": "Invalid plot path."}
     if not full_path.exists():
-        return {"analysis": f"Plot file not found: {rel}"}
+        return {"analysis": f"Plot file not found: {basename}"}
     try:
         from matclaw.vision.analyst import analyze_plot
         analysis = await asyncio.to_thread(analyze_plot, str(full_path))
@@ -1067,7 +1232,7 @@ async def smart_generate(req: SmartGenRequest):
 
         # Extract agent name: first capitalized phrase or fallback to topic
         name_match = _re.search(r'\*\*([A-Z][A-Za-z ]{3,40})\*\*|^([A-Z][A-Za-z ]{3,40}):', description, _re.MULTILINE)
-        name = (name_match.group(1) or name_match.group(2)).strip() if name_match else req.topic[:60]
+        name = ((name_match.group(1) or name_match.group(2) or "").strip() if name_match else "") or req.topic[:60]
 
         # Infer allowed_tools from description
         tool_map = {
@@ -1175,8 +1340,8 @@ async def run_pipeline_endpoint(pipeline_id: str):
     async def _execute():
         try:
             router = TaskRouter()
-            dag = pipeline_to_dag_plan(pipeline)
-            router.build_dag(dag)
+            dag, edges = pipeline_to_dag_plan(pipeline)
+            router.build_dag(dag, edges=edges)
             try:
                 order = router.get_execution_order()
             except ValueError as e:
@@ -1300,7 +1465,7 @@ async def stream_pipeline_run(run_id: str):
 
 @app.delete("/api/pipelines/runs/{run_id}")
 async def cancel_pipeline_run(run_id: str):
-    queue = _active_runs.pop(run_id, None)
+    queue = _active_runs.get(run_id)
     if queue:
         await queue.put(_sse("pipeline_error", {"error": "Cancelled by user"}))
         await queue.put(None)
@@ -1314,6 +1479,8 @@ def list_pipeline_runs(pipeline_id: str):
 
 # ── Model Manager ────────────────────────────────────────────────────────────
 MODELS_FILE = ROOT / ".matclaw_models.json"
+import threading as _threading
+_models_lock = _threading.Lock()
 
 class ModelConfig(BaseModel):
     id: str = ""
@@ -1325,12 +1492,21 @@ class ModelConfig(BaseModel):
     active: bool = False
 
 def _load_models() -> list[dict]:
-    if MODELS_FILE.exists():
-        return json.loads(MODELS_FILE.read_text())
-    return []
+    with _models_lock:
+        if MODELS_FILE.exists():
+            try:
+                return json.loads(MODELS_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                return []
+        return []
 
 def _save_models(models: list[dict]):
-    MODELS_FILE.write_text(json.dumps(models, indent=2))
+    import tempfile
+    with _models_lock:
+        data = json.dumps(models, indent=2)
+        tmp = MODELS_FILE.with_suffix(".tmp")
+        tmp.write_text(data)
+        tmp.replace(MODELS_FILE)
 
 @app.get("/api/settings/models")
 def list_models():
@@ -1460,7 +1636,8 @@ async def run_nl(req: RunRequest):
 
     try:
         # ── Phase 1: LLM decides action + generates conversational reply ──
-        raw_resp = _llm_chat(
+        raw_resp = await asyncio.to_thread(
+            _llm_chat,
             req.effective_text,
             system=MATCLAW_PERSONA,
             history=req.history[-10:] if req.history else None,
@@ -1508,7 +1685,9 @@ async def run_nl(req: RunRequest):
                     code = find_demo(req.effective_text) or ""
 
             if code:
-                exec_output, plots = _run_matlab_and_collect(code, req.effective_text)
+                exec_output, plots = await asyncio.to_thread(
+                    _run_matlab_and_collect, code, req.effective_text
+                )
                 # Blend conversational reply with execution result
                 if reply and exec_output and not exec_output.startswith("MATLAB error"):
                     output = reply
@@ -1530,9 +1709,13 @@ async def run_nl(req: RunRequest):
                 proj_dir.mkdir(parents=True, exist_ok=True)
 
                 for f in proj_files:
-                    fname = f.get("filename", "untitled.m")
+                    fname = os.path.basename(f.get("filename", "untitled.m"))
                     content = f.get("content", "")
-                    (proj_dir / fname).write_text(content, encoding="utf-8")
+                    safe_path = (proj_dir / fname).resolve()
+                    if not safe_path.is_relative_to(proj_dir.resolve()):
+                        logger.warning("Skipping file with path traversal: %s", fname)
+                        continue
+                    safe_path.write_text(content, encoding="utf-8")
                     files.append({
                         "path": f"{proj_name}/{fname}",
                         "filename": fname,
@@ -1676,12 +1859,13 @@ async def run_nl_stream(req: RunRequest):
                 )
                 if result.success:
                     yield _sse("tool_result", {"output": result.output, "plots": result.plots, "files": []})
-                    yield _sse("text", {"token": result.output})
+                    yield _sse("done", {"skill": f"run_{rt_name}", "elapsed_ms": result.elapsed_ms or 0, "reply": result.output, "plots": result.plots, "files": []})
                 else:
                     yield _sse("tool_result", {"output": result.error, "plots": [], "files": []})
-                    yield _sse("error", {"message": result.error})
+                    yield _sse("done", {"skill": f"run_{rt_name}", "elapsed_ms": 0, "reply": result.error, "plots": [], "files": []})
             except Exception as _rt_exc:
                 yield _sse("error", {"message": str(_rt_exc)})
+                yield _sse("done", {"skill": f"run_{rt_name}", "elapsed_ms": 0, "reply": str(_rt_exc), "plots": [], "files": []})
             return
 
         # ── Agentic mode: iterative tool-use loop ─────────────────────────────
@@ -1731,22 +1915,85 @@ async def run_nl_stream(req: RunRequest):
                     return out_str, plots
                 return f"Unknown tool: {tool_name}", []
 
+            memory_preamble = ""
+            prod = getattr(settings, "production", None)
+            if (
+                settings.long_term_memory.enabled
+                and prod
+                and getattr(prod, "memory_inject_enabled", True)
+            ):
+                try:
+                    n_res = int(getattr(prod, "memory_n_results", 5))
+                    max_ch = int(getattr(prod, "memory_max_chars", 4000))
+                    hits = memory.query_context(req.effective_text, n_results=max(1, min(20, n_res)))
+                    lines: list[str] = []
+                    for h in hits:
+                        doc = (h.get("document") or "").strip()
+                        if doc:
+                            lines.append(doc[:1200])
+                    blob = "\n\n".join(lines)
+                    if blob.strip():
+                        memory_preamble = (
+                            "Relevant prior context from long-term memory "
+                            "(past tasks, preferences, or lessons — verify before relying on it):\n"
+                            + blob[:max_ch]
+                        )
+                except Exception as _mem_q:
+                    logger.debug("Memory preamble skipped: %s", _mem_q)
+
             # Wrap agentic loop with a keepalive ping every 20s
             # so the browser SSE connection doesn't drop during long MATLAB runs.
-            agentic_gen = run_agentic_loop(
-                user_text=req.effective_text,
-                history=req.history,
-                settings=settings,
-                tool_registry=tool_registry,
-                runtime_dispatcher=_agentic_runtime_dispatch,
-            )
-            last_ping = time.time()
-            async for event in agentic_gen:
-                yield event
-                # Send a keepalive comment every 20s
-                if time.time() - last_ping > 20:
-                    yield ": keepalive\n\n"
-                    last_ping = time.time()
+            async with _agentic_slot_semaphore:
+                agentic_gen = run_agentic_loop(
+                    user_text=req.effective_text,
+                    history=req.history,
+                    settings=settings,
+                    tool_registry=tool_registry,
+                    runtime_dispatcher=_agentic_runtime_dispatch,
+                    memory_preamble=memory_preamble or None,
+                    session_id=req.session_id,
+                    memory_manager=memory,
+                )
+                last_ping = time.time()
+                agentic_done = False
+                async for event in agentic_gen:
+                    yield event
+                    if 'event: done' in event:
+                        agentic_done = True
+                    if time.time() - last_ping > 20:
+                        yield ": keepalive\n\n"
+                        last_ping = time.time()
+            if not agentic_done:
+                elapsed = int((time.time() - t0) * 1000)
+                prod = getattr(settings, "production", None)
+                budget_ms = int((getattr(prod, "max_agentic_wall_seconds", 600.0) * 1000)) if prod else 600_000
+                cost_cap_fb = float(getattr(prod, "soft_cost_cap_usd_per_task", 0.0) or 0.0) if prod else 0.0
+                yield _sse("done", {
+                    "skill": "agentic",
+                    "elapsed_ms": elapsed,
+                    "reply": "",
+                    "plots": [],
+                    "files": [],
+                    "execution": {
+                        "run_success": False,
+                        "spec_satisfied": False,
+                        "violations": ["Stream ended before final agentic done event."],
+                        "notes": [],
+                    },
+                    "budget": {
+                        "wall_clock_ms": elapsed,
+                        "wall_clock_budget_ms": budget_ms,
+                        "within_wall_budget": elapsed <= budget_ms,
+                        "wall_abort": False,
+                        "soft_cost_cap_usd": cost_cap_fb,
+                        "cost_abort": False,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "estimated_cost_usd": 0.0,
+                        "within_soft_cost_cap": True,
+                    },
+                })
             return
 
         try:
@@ -1909,9 +2156,15 @@ async def run_nl_stream(req: RunRequest):
                     await asyncio.to_thread(_set_state, ExecutionState.IMPLEMENTING, {})
 
                     yield _sse("tool_start", {"action": "run_matlab", "label": "Running MATLAB code..."})
-                    exec_output, plots = await asyncio.to_thread(
-                        _run_matlab_and_collect, code, req.effective_text
+                    _mat_task = asyncio.create_task(
+                        asyncio.to_thread(_run_matlab_and_collect, code, req.effective_text)
                     )
+                    while not _mat_task.done():
+                        _done, _ = await asyncio.wait([_mat_task], timeout=12.0)
+                        if _mat_task in _done:
+                            break
+                        yield ": keepalive\n\n"
+                    exec_output, plots = await _mat_task
                     yield _sse("tool_result", {
                         "output": exec_output,
                         "plots": plots,
@@ -1929,15 +2182,23 @@ async def run_nl_stream(req: RunRequest):
                         def _doctor_executor(fixed_code: str, task: str) -> tuple[str, list[str]]:
                             return _run_matlab_and_collect(fixed_code, task)
 
-                        code, exec_output, plots, _rounds = await asyncio.to_thread(
-                            run_code_doctor,
-                            code, exec_output, plots,
-                            req.effective_text,
-                            str(PLOTS_DIR),
-                            _doctor_executor,
-                            _llm_chat,          # LLM fallback (sync)
-                            _on_doctor_event,
+                        _doc_task = asyncio.create_task(
+                            asyncio.to_thread(
+                                run_code_doctor,
+                                code, exec_output, plots,
+                                req.effective_text,
+                                str(PLOTS_DIR),
+                                _doctor_executor,
+                                _llm_chat,
+                                _on_doctor_event,
+                            )
                         )
+                        while not _doc_task.done():
+                            _d2, _ = await asyncio.wait([_doc_task], timeout=12.0)
+                            if _doc_task in _d2:
+                                break
+                            yield ": keepalive\n\n"
+                        code, exec_output, plots, _rounds = await _doc_task
 
                         # Flush collected doctor events as SSE
                         for ev_name, ev_data in doctor_events:
@@ -2030,9 +2291,13 @@ async def run_nl_stream(req: RunRequest):
                     proj_dir.mkdir(parents=True, exist_ok=True)
 
                     for f in proj_files:
-                        fname = f.get("filename", "untitled.m")
+                        fname = os.path.basename(f.get("filename", "untitled.m"))
                         content = f.get("content", "")
-                        (proj_dir / fname).write_text(content, encoding="utf-8")
+                        safe_path = (proj_dir / fname).resolve()
+                        if not safe_path.is_relative_to(proj_dir.resolve()):
+                            logger.warning("Skipping file with path traversal: %s", fname)
+                            continue
+                        safe_path.write_text(content, encoding="utf-8")
                         files.append({
                             "path": f"{proj_name}/{fname}",
                             "filename": fname,
@@ -2215,6 +2480,7 @@ async def run_nl_stream(req: RunRequest):
             except Exception:
                 pass
             yield _sse("error", {"message": str(exc)})
+            yield _sse("done", {"skill": "error", "elapsed_ms": int((time.time() - t0) * 1000), "reply": str(exc), "plots": [], "files": []})
 
     return StreamingResponse(
         event_generator(),
@@ -2231,8 +2497,16 @@ async def run_nl_stream(req: RunRequest):
 
 @app.get("/metrics")
 def get_metrics():
-    """Prometheus-style metrics snapshot."""
-    return _metrics.snapshot()
+    """Prometheus-style metrics snapshot + production SLO hints (read-only)."""
+    snap = _metrics.snapshot()
+    prod = getattr(settings, "production", None)
+    snap["production"] = {
+        "max_agentic_wall_seconds": getattr(prod, "max_agentic_wall_seconds", None) if prod else None,
+        "agentic_max_concurrent": getattr(prod, "agentic_max_concurrent", None) if prod else None,
+        "soft_cost_cap_usd_per_task": getattr(prod, "soft_cost_cap_usd_per_task", None) if prod else None,
+        "memory_inject_enabled": getattr(prod, "memory_inject_enabled", None) if prod else None,
+    }
+    return snap
 
 
 @app.get("/api/daemon/status")

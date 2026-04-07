@@ -12,6 +12,7 @@ the batch runner is used for multi-second simulations.
 """
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import re
@@ -35,9 +36,26 @@ def _find_matlab() -> str | None:
     for p in _MATLAB_CANDIDATES:
         if Path(p).exists():
             return p
+    # Any installed MATLAB under /Applications (e.g. R2026a not in the static list)
+    matches = sorted(glob.glob("/Applications/MATLAB_R*.app/bin/matlab"))
+    if matches:
+        return matches[-1]
     return None
 
 MATLAB_BIN = _find_matlab()
+
+
+def split_matlab_script_and_local_functions(code: str) -> tuple[str, str]:
+    """
+    Split MATLAB source into the executable script body and any trailing local
+    function block(s). Local functions must appear at the end of a .m file;
+    MatClaw wrappers that append save/close boilerplate must insert that
+    boilerplate *before* those functions, not after the entire user paste.
+    """
+    m = re.search(r"(?m)^function\s", code)
+    if not m:
+        return code.rstrip(), ""
+    return code[: m.start()].rstrip(), code[m.start() :].lstrip()
 
 
 def run_batch(
@@ -75,20 +93,32 @@ def run_batch(
         f.write(full_code)
         script_path = f.name
 
+    before_run_ts = time.time()
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [
                 MATLAB_BIN,
-                "-nosplash",       # Skip splash screen
-                "-nodesktop",      # Don't initialize desktop
-                "-batch",          # Batch mode: exit with error code on failure
+                "-nosplash",
+                "-nodesktop",
+                "-batch",
                 f"run('{script_path.replace(chr(39), chr(39)*2)}');",
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env={**os.environ, "MATLABPATH": plots_dir},
         )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+            logger.error("MATLAB batch timed out after %.0fs — process killed", timeout)
+            return False, (
+                f"Simulation timed out after {timeout:.0f}s. "
+                "Try: fewer time steps, larger dt, or vectorized operations instead of for-loops."
+            ), []
+        result = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
 
@@ -99,11 +129,9 @@ def run_batch(
         if Path(save_path).exists() and Path(save_path).stat().st_size > 0:
             plots.append(f"/plots/{Path(save_path).name}")
 
-        # Also scan for any other PNGs created during the run
         plots_dir_path = Path(plots_dir)
-        before_ts = ts - 1
         for p in sorted(plots_dir_path.glob("*.png"), key=lambda x: x.stat().st_mtime):
-            if p.stat().st_mtime >= before_ts and f"/plots/{p.name}" not in plots:
+            if p.stat().st_mtime >= before_run_ts and f"/plots/{p.name}" not in plots:
                 plots.append(f"/plots/{p.name}")
 
         if result.returncode == 0:
@@ -114,12 +142,6 @@ def run_batch(
             error_text = _extract_matlab_error(stderr or stdout)
             return False, f"MATLAB error: {error_text}", plots
 
-    except subprocess.TimeoutExpired:
-        logger.error("MATLAB batch timed out after %.0fs", timeout)
-        return False, (
-            f"Simulation timed out after {timeout:.0f}s. "
-            "Try: fewer time steps, larger dt, or vectorized operations instead of for-loops."
-        ), []
     except Exception as exc:
         logger.exception("Batch runner failed: %s", exc)
         return False, f"Batch runner error: {exc}", []
@@ -132,28 +154,38 @@ def run_batch(
 
 def _build_script(code: str, save_path: str) -> str:
     """Wrap user code with headless figure capture boilerplate."""
-    return (
-        "% MatClaw batch execution — headless mode\n"
-        "set(0, 'DefaultFigureVisible', 'off');\n"
-        "set(0, 'DefaultFigureRenderer', 'painters');\n"
-        "\n"
-        + code
-        + f"\n\n"
-        "% Auto-save any open figures\n"
+    esc = save_path.replace("'", "''")
+    main_body, local_fns = split_matlab_script_and_local_functions(code)
+    footer = (
+        f"\n\n"
+        "% Auto-save any open figures (saveas is more reliable headless than exportgraphics)\n"
         "try\n"
         "  figs = get(0, 'Children');\n"
         f"  if ~isempty(figs)\n"
-        f"    exportgraphics(figs(1), '{save_path}', 'Resolution', 150);\n"
+        f"    saveas(figs(1), '{esc}', 'png');\n"
+        f"    if ~exist('{esc}', 'file')\n"
+        f"      print(figs(1), '-dpng', '-r100', '{esc}');\n"
+        f"    end\n"
         f"    fprintf('Plot saved: {save_path}\\n');\n"
         "  end\n"
         "catch ME\n"
         "  try\n"
-        f"    print(gcf, '-dpng', '-r150', '{save_path}');\n"
+        f"    print(gcf, '-dpng', '-r100', '{esc}');\n"
         "  catch\n"
         "  end\n"
         "end\n"
         "close all;\n"
     )
+    header = (
+        "% MatClaw batch execution — headless mode\n"
+        "set(0, 'DefaultFigureVisible', 'off');\n"
+        "set(0, 'DefaultFigureRenderer', 'painters');\n"
+        "\n"
+    )
+    core = header + main_body + footer
+    if local_fns:
+        return core + "\n" + local_fns
+    return core
 
 
 def _clean_output(text: str) -> str:
@@ -190,4 +222,4 @@ def _extract_matlab_error(text: str) -> str:
     return text[:300] if text else "Unknown error"
 
 
-__all__ = ["run_batch", "MATLAB_BIN"]
+__all__ = ["run_batch", "MATLAB_BIN", "split_matlab_script_and_local_functions"]

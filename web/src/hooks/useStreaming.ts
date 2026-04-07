@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useEffect } from 'react'
 import type { ProjectFile } from '../lib/sessions'
 
 const API = 'http://localhost:8000'
@@ -25,6 +25,7 @@ export interface AgentResult {
   success: boolean
   output: string
   plots: string[]
+  quality?: Record<string, unknown>
 }
 
 export interface DoctorEvent {
@@ -44,7 +45,15 @@ export interface StreamCallbacks {
   onText: (token: string) => void
   onToolStart: (data: { action: string; label: string }) => void
   onToolResult: (data: { output: string; plots: string[]; files: ProjectFile[]; code?: string }) => void
-  onDone: (data: { skill: string; elapsed_ms: number; reply: string; plots: string[]; files: ProjectFile[] }) => void
+  onDone: (data: {
+    skill: string
+    elapsed_ms: number
+    reply: string
+    plots: string[]
+    files: ProjectFile[]
+    execution?: Record<string, unknown>
+    budget?: Record<string, unknown>
+  }) => void
   onError: (msg: string) => void
   onSentryUpdate?: (data: SentryUpdate) => void
   onAgentStep?: (data: AgentStep) => void
@@ -56,6 +65,10 @@ export interface StreamCallbacks {
 export function useStreaming() {
   const abortRef = useRef<AbortController | null>(null)
 
+  useEffect(() => {
+    return () => { abortRef.current?.abort() }
+  }, [])
+
   const streamRun = useCallback(async (
     text: string,
     sessionId: string,
@@ -63,7 +76,8 @@ export function useStreaming() {
     callbacks: StreamCallbacks,
     mode: string = 'auto',
     sentryMode: boolean = false,
-    doctorMode: boolean = true,
+    doctorMode: boolean = false,
+    forceRuntime?: string | null,
   ) => {
     const controller = new AbortController()
     abortRef.current = controller
@@ -74,11 +88,22 @@ export function useStreaming() {
       callbacks.onError('Request timed out after 5 minutes. The simulation may be too complex — try simplifying.')
     }, 300_000)
 
+    let receivedDone = false
     try {
+      const body: Record<string, unknown> = {
+        text,
+        session_id: sessionId,
+        history,
+        mode,
+        sentry_mode: sentryMode,
+        doctor_mode: doctorMode,
+      }
+      if (forceRuntime) body.force_runtime = forceRuntime
+
       const response = await fetch(`${API}/api/run/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, session_id: sessionId, history, mode, sentry_mode: sentryMode, doctor_mode: doctorMode }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       })
 
@@ -91,10 +116,14 @@ export function useStreaming() {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      // receivedDone declared above try block so catch can read it
 
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
+        if (done) {
+          buffer += decoder.decode()
+          break
+        }
         buffer += decoder.decode(value, { stream: true })
 
         // Parse SSE lines from buffer
@@ -113,7 +142,7 @@ export function useStreaming() {
                 case 'text': callbacks.onText(data.token); break
                 case 'tool_start': callbacks.onToolStart(data); break
                 case 'tool_result': callbacks.onToolResult(data); break
-                case 'done': callbacks.onDone(data); break
+                case 'done': receivedDone = true; callbacks.onDone(data); break
                 case 'error': callbacks.onError(data.message); break
                 case 'sentry_start':
                   callbacks.onSentryUpdate?.({ type: 'start', message: data.message }); break
@@ -163,10 +192,32 @@ export function useStreaming() {
           }
         }
       }
+
+      if (buffer.trim()) {
+        const remaining = buffer.split('\n')
+        let currentEvent = ''
+        for (const line of remaining) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim()
+          } else if (line.startsWith('data: ') && currentEvent) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (currentEvent === 'done') { receivedDone = true; callbacks.onDone(data) }
+              else if (currentEvent === 'error') { callbacks.onError(data.message) }
+            } catch { /* skip */ }
+            currentEvent = ''
+          }
+        }
+      }
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
+      const name = (err as Error).name
+      // Suppress AbortError (user cancelled) and Safari's "Load failed" after a clean done event
+      if (name !== 'AbortError' && !(receivedDone && (err as Error).message?.includes('Load failed'))) {
         callbacks.onError(`Stream failed: ${err}`)
       }
+    } finally {
+      clearTimeout(timeoutId)
+      abortRef.current = null
     }
   }, [])
 

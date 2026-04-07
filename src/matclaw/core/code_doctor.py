@@ -106,13 +106,32 @@ def _detect_domain(code: str, task_text: str) -> str:
     return "general"
 
 
+def _safe_numeric_eval(expr: str) -> float:
+    """Parse simple numeric expressions (digits, dots, *, +, e-notation) without eval()."""
+    import ast
+    sanitized = expr.strip()
+    if not re.fullmatch(r'[\d\.\*\+eE\-\s]+', sanitized):
+        raise ValueError(f"Unsupported expression: {sanitized!r}")
+    try:
+        tree = ast.parse(sanitized, mode='eval')
+    except SyntaxError:
+        raise ValueError(f"Cannot parse: {sanitized!r}")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Expression, ast.BinOp, ast.UnaryOp,
+                             ast.Constant, ast.Add, ast.Mult, ast.Sub,
+                             ast.Pow, ast.USub)):
+            continue
+        raise ValueError(f"Disallowed AST node: {type(node).__name__}")
+    return float(eval(compile(tree, "<safe>", "eval"), {"__builtins__": {}}))
+
+
 def _estimate_iterations(code: str) -> int:
     """Estimate worst-case loop count from dt/N patterns in code."""
     total_time = 0
     dt = 0
-    for m in re.finditer(r'\bT\s*=\s*([\d\.\*\+eE]+)', code):
+    for m in re.finditer(r'\bT\s*=\s*([\d\.\*\+eE\-]+)', code):
         try:
-            total_time = max(total_time, float(eval(m.group(1).replace('*', '*'))))
+            total_time = max(total_time, _safe_numeric_eval(m.group(1)))
         except Exception:
             pass
     for m in re.finditer(r'\bdt\s*=\s*([\d\.]+)', code):
@@ -140,6 +159,22 @@ def _check_plot_quality(plot_path: str) -> float:
     except Exception as e:
         logger.debug("PIL check failed: %s", e)
         return -1.0
+
+
+def _task_asks_base_matlab(task_text: str) -> bool:
+    t = (task_text or "").lower()
+    return any(
+        p in t
+        for p in ("base matlab", "no toolbox", "without toolbox", "only base matlab", "no toolboxes")
+    )
+
+
+# Non-exhaustive — align with spec_compliance.TOOLBOX set where possible
+_MATLAB_TOOLBOX_HINTS: list[tuple[str, str]] = [
+    (r"\bknnsearch\s*\(", "knnsearch (Statistics and Machine Learning Toolbox)"),
+    (r"\bpdist2\s*\(", "pdist2 (Statistics Toolbox)"),
+    (r"\bfitlm\s*\(", "fitlm (Statistics Toolbox)"),
+]
 
 
 def diagnose(
@@ -221,8 +256,8 @@ def diagnose(
             ))
 
 
-    # ── Stale figures ─────────────────────────────────────────────────────────
-    if not re.match(r'^\s*close\s+all', code, re.IGNORECASE | re.MULTILINE):
+    # ── Stale figures — only flag if there are other critical issues ─────────
+    if result.has_critical and not re.match(r'^\s*close\s+all', code, re.IGNORECASE | re.MULTILINE):
         result.issues.append(Issue(
             type="stale_figures",
             severity="warning",
@@ -244,6 +279,29 @@ def diagnose(
             type="syntax_newline",
             severity="critical",
             description=r"Literal `\n` inside single-quoted MATLAB string — use sprintf() or flatten to single line.",
+        ))
+
+    # ── Base MATLAB / toolbox constraints ───────────────────────────────────
+    if _task_asks_base_matlab(task_text):
+        for pat, label in _MATLAB_TOOLBOX_HINTS:
+            if re.search(pat, code):
+                result.issues.append(Issue(
+                    type="toolbox_constraint_violation",
+                    severity="critical",
+                    description=f"Task requires base MATLAB only but code uses {label}.",
+                ))
+
+    # ── Top-level function in temp script (MatClaw) ─────────────────────────
+    stripped = (code or "").strip()
+    if stripped.startswith("function ") or re.match(r"^function\s+\w+", stripped):
+        result.issues.append(Issue(
+            type="matlab_top_level_named_function",
+            severity="warning",
+            description=(
+                "Code begins with `function name(...)`. In MatClaw the temp .m filename won't match; "
+                "use a script body or rename the primary function to match the runner. "
+                "CodeDoctor can strip the leading `function ...` line when auto-fixing."
+            ),
         ))
 
     # ── Output error parsing ─────────────────────────────────────────────────
@@ -305,24 +363,11 @@ def apply_fixes(code: str, diagnosis: DiagnosisResult) -> tuple[str, list[str]]:
             code = new_code
             fixes_applied.append("Changed dt to 300s to reduce iteration count by 5× and prevent timeout")
 
-        # Vectorize simple `for i=1:N ... end` pattern if the body is simple assignments
-        # This is a conservative transformation: only if body has no function calls
-        def _vectorize_for(m: re.Match) -> str:
-            loop_var = m.group(1)
-            body     = m.group(2)
-            # Only vectorize if body has no nested for/if/function calls
-            if re.search(r'\b(for|if|while|switch|function)\b', body):
-                return m.group(0)   # leave unchanged
-            # Replace loop_var indexing: var(i) → var  (MATLAB broadcasts)
-            vectorized = re.sub(rf'\b(\w+)\(\s*{loop_var}\s*\)', r'\1', body)
-            return f"% (vectorized by CodeDoctor)\n{vectorized.strip()}"
-
-        # Only attempt on small single-body loops
-        code = re.sub(
-            r'for\s+(\w+)\s*=\s*1\s*:\s*N\s*\n((?:(?!end\b)[\s\S]){1,300}?)\s*end\b',
-            _vectorize_for, code,
-        )
-        fixes_applied.append("Attempted loop vectorization to eliminate for i=1:N pattern")
+        # Also try to reduce N directly when found
+        new_code2 = re.sub(r'\bN\s*=\s*\d{4,}\b', 'N = 500', code)
+        if new_code2 != code:
+            code = new_code2
+            fixes_applied.append("Reduced N to 500 to prevent timeout")
 
     # ── Fix: invalid printf format ────────────────────────────────────────────
     if "syntax_printf" in issue_types:
@@ -335,6 +380,15 @@ def apply_fixes(code: str, diagnosis: DiagnosisResult) -> tuple[str, list[str]]:
         code = re.sub(r"('(?:[^'\\]|\\.)*?)\\n((?:[^'\\]|\\.)*?')",
                       lambda m: m.group(1) + '  ' + m.group(2), code)
         fixes_applied.append(r"Flattened literal `\n` in MATLAB strings to spaces (use sprintf for newlines)")
+
+    # ── Fix: remove leading function line for MatClaw script temp files ─────
+    if "matlab_top_level_named_function" in issue_types:
+        new_code = re.sub(r"^\s*function\s+\w+[^\n]*\n", "", code, count=1, flags=re.MULTILINE)
+        if new_code != code:
+            code = new_code
+            fixes_applied.append(
+                "Removed leading `function ...` line so the file runs as a script in MatClaw temp execution"
+            )
 
     # ── Fix: runtime_error — wrap in try/catch so error is readable ──────────
     if "runtime_error" in issue_types and not fixes_applied:

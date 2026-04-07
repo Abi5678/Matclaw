@@ -1,21 +1,26 @@
 """
 Natural language → skill router.
 Maps intent keywords/phrases to (skill_name, extra_kwargs).
+
+Keywords are matched as full words (word-boundary search) to avoid false
+positives from substring matching (e.g. "run" matching "grunting").
+Multi-word phrases are matched as-is (substring).
 """
 from __future__ import annotations
 import re
+from functools import lru_cache
 
 # ── intent → skill mapping ───────────────────────────────────────────────────
+# Each entry is (set_of_keywords_or_phrases, skill_name).
 NL_MAP: list[tuple[set[str], str]] = [
-    # query_memory — recall / search past experiments (must come before run_matlab
-    # so "what did I run recently?" doesn't match "run" → run_matlab first)
+    # query_memory — recall / search past experiments
     ({"remember", "recall", "memory", "what did", "last time", "previous",
-      "recently", "recent runs", "history", "past", "experiment", "when did",
+      "recently", "recent runs", "history", "past experiment", "when did",
       "which run", "best result", "find experiment", "search memory",
-      "what was", "what were", "log", "journal", "ran recently",
+      "what was", "what were", "journal", "ran recently",
       "run recently", "did i run"}, "query_memory"),
 
-    # run_python — Python execution (before run_matlab to avoid "python fibonacci" going to MATLAB)
+    # run_python — Python execution
     ({"python script", "python code", "run python", "execute python",
       "write python", "import pandas", "import numpy", "import torch",
       "pip install", "virtualenv", "django", "flask", "fastapi",
@@ -28,29 +33,29 @@ NL_MAP: list[tuple[set[str], str]] = [
       "ssh ", "rsync", "curl ", "wget ", "cat /", "echo $",
       "cron", "systemctl", "docker run", "kubectl"}, "run_shell"),
 
-    # run_matlab — compute / plot / draw / simulate
+    # run_matlab — compute / plot / draw / simulate (removed overly broad single words)
     ({"plot", "draw", "graph", "chart", "visuali", "surf", "mesh", "scatter",
       "histogram", "bar chart", "pie chart", "contour", "heatmap",
-      "animation", "animate", "gif", "lorenz", "3d", "surface",
-      "compute", "calculate", "eval", "run", "execute", "solve",
-      "integrate", "differentiate", "fft", "filter",
-      "simulate", "ode", "matrix", "array", "vector",
-      "print", "disp", "show me", "generate", "create array",
-      "fibonacci", "sort", "find roots", "eigenvalue"}, "run_matlab"),
+      "animation", "animate", "gif", "lorenz", "3d surface",
+      "compute", "calculate", "run matlab", "execute matlab", "solve",
+      "integrate", "differentiate", "fft", "filter design",
+      "simulate", "ode45", "ode23", "matrix", "eigenvalue",
+      "disp(", "show me", "create array",
+      "fibonacci", "find roots"}, "run_matlab"),
 
     # pid_optimizer
-    ({"pid", "tune", "controller", "ziegler", "imc", "settling time",
-      "overshoot", "rise time", "closed.loop", "feedback control",
-      "proportional", "integral", "derivative"}, "pid_optimizer"),
+    ({"pid", "tune controller", "ziegler", "imc tuning", "settling time",
+      "overshoot", "rise time", "closed loop", "feedback control",
+      "proportional integral", "pid controller"}, "pid_optimizer"),
 
     # signal_analyzer
-    ({"signal", "fft", "spectrum", "frequency", "noise", "snr",
-      "butterworth", "bandpass", "lowpass", "highpass", "filter design",
-      "spectral", "waveform", "sampling", "nyquist"}, "signal_analyzer"),
+    ({"signal analysis", "fft", "spectrum", "frequency response", "noise filter",
+      "snr", "butterworth", "bandpass", "lowpass", "highpass", "filter design",
+      "spectral", "waveform", "sampling rate", "nyquist"}, "signal_analyzer"),
 
     # workspace_auditor
-    ({"workspace", "audit", "variable", "inspect", "what's in",
-      "list variables", "whos", "workspace health", "undefined",
+    ({"workspace", "audit", "inspect variables", "what's in",
+      "list variables", "whos", "workspace health",
       "check workspace"}, "workspace_auditor"),
 
     # code_reviewer
@@ -58,44 +63,54 @@ NL_MAP: list[tuple[set[str], str]] = [
       "optimize code", "refactor", "clean up", "lint"}, "code_reviewer"),
 
     # report_generator
-    ({"report", "summary", "document", "write up", "generate report",
-      "pdf", "export results", "compile"}, "report_generator"),
+    ({"report", "write up", "generate report",
+      "pdf export", "export results"}, "report_generator"),
 
     # simulink_runner
-    ({"simulink", "block diagram", "model", "simulation model",
+    ({"simulink", "block diagram", "simulation model",
       "slx", "mdl", "run model", "sim("}, "simulink_runner"),
 
     # file_doctor
-    ({"mat file", "corrupt", "repair", "recover", "broken file",
+    ({"mat file", "corrupt", "repair file", "recover file", "broken file",
       "fix file", "load error"}, "file_doctor"),
 
     # gitlab_reporter
-    ({"gitlab", "issue", "merge request", "mr ", "bug report",
+    ({"gitlab", "merge request", "bug report",
       "create ticket", "commit message"}, "gitlab_reporter"),
 ]
+
+
+@lru_cache(maxsize=256)
+def _compile_keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """Compile a keyword into a word-boundary regex for accurate matching."""
+    escaped = re.escape(keyword)
+    if " " in keyword or keyword.endswith("("):
+        return re.compile(escaped, re.IGNORECASE)
+    return re.compile(rf"\b{escaped}\b", re.IGNORECASE)
 
 
 def route_nl_message(text: str) -> tuple[str, dict]:
     """
     Return (skill_name, extra_kwargs) for the given NL text.
     Falls back to 'run_matlab' for compute/ambiguous requests,
-    then 'workspace_auditor' as the last resort.
+    then 'chat' as the last resort.
     """
     lower = text.lower()
 
     for keywords, skill in NL_MAP:
-        if any(kw in lower for kw in keywords):
+        if any(_compile_keyword_pattern(kw).search(lower) for kw in keywords):
             return skill, {}
 
     # project generation hints
-    project_hints = {"create a", "build a", "make a game", "make a project",
-                     "generate project", "snake game", "tic tac toe", "pong",
-                     "dashboard", "web app", "flask app", "html page"}
+    project_hints = {"create a project", "build a game", "make a game", "make a project",
+                     "generate project", "snake game", "tic tac toe", "pong game",
+                     "dashboard app", "web app", "flask app", "html page"}
     if any(h in lower for h in project_hints):
         return "project_gen", {}
 
-    # keyword-set fallback: strong compute hints
-    compute_hints = {"write", "make", "do", "perform", "show", "give me", "try"}
+    # Compute-hinting phrases (multi-word to avoid false positives)
+    compute_hints = {"run this", "execute this", "compute this", "calculate this",
+                     "show me how", "give me a plot", "plot this"}
     if any(h in lower for h in compute_hints):
         return "run_matlab", {}
 
