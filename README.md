@@ -97,20 +97,28 @@ The workflow (`workflows/nat_matclaw_mcp.yml`) connects NAT to MatClaw's MCP too
 
 ---
 
-## Status
+## Production Agentic Mode (New)
 
-🚀 RPI loop, ChromaDB memory, Sentry, HITL gate, Vision analyst, Digital Twin sync, Docker + one-click launch.  
-🧪 MCP server with tools; NVIDIA Nemotron + NAT integration for agentic MATLAB workflows.
+MatClaw now includes production-focused controls for long-running autonomous MATLAB tasks:
+
+- **Hard wall-clock budget** for agentic runs (`MATCLAW_PRODUCTION__MAX_AGENTIC_WALL_SECONDS`).
+- **Token/cost metering** from provider usage in tool-calling mode, with optional soft task cap:
+  - `MATCLAW_PRODUCTION__SOFT_COST_CAP_USD_PER_TASK`
+  - `MATCLAW_PRODUCTION__USD_PER_1K_PROMPT_TOKENS`
+  - `MATCLAW_PRODUCTION__USD_PER_1K_COMPLETION_TOKENS`
+- **Concurrent agentic run limiter** per API process:
+  - `MATCLAW_PRODUCTION__AGENTIC_MAX_CONCURRENT`
+- **Spec-vs-run quality signals** for MATLAB calls (e.g., base-MATLAB/toolbox violations) emitted in stream events and surfaced in the Control Plane.
+
+Useful endpoints:
+
+- `GET /health` — liveness/degradation hints
+- `GET /metrics` — production snapshot (budgets, limits, memory inject config)
+- `POST /api/run/stream` with `mode: "agentic"` — iterative tool-use loop with structured SSE events (`agent_step`, `agent_result`, `done`)
 
 ---
 
-## Project Progress & Next Updates
+## Status
 
-- **Current progress**
-  - Core MatClaw architecture is in place: multi-agent RPI loop, MATLAB bridge, Sentry, HITL, and lab journal wiring.
-  - Streamlit UI (`src/matclaw/ui/app.py`) is running against the Python 3.11 virtual environment.
-  - MCP server and NVIDIA Nemotron / NeMo Agent Toolkit integration are wired via `pyproject.toml` and `workflows/nat_matclaw_mcp.yml`.
-- **Next near-term updates**
-  - Harden and document a few reference skills under `src/matclaw/skills/` (e.g., PID tuning, workspace auditing, reporting).
-  - Add automated tests and a lightweight CI workflow (lint, type-check, and smoke tests for the MCP server and UI).
-  - Publish more detailed setup and troubleshooting docs for MATLAB Engine, Docker, and remote (Telegram) orchestration.
+🚀 FastAPI Control Plane + agentic loop, MATLAB bridge hardening, Code Doctor retries, Chroma-backed memory injection, and execution quality telemetry are live in the current branch.  
+🧪 Test suite includes backend API/core coverage and frontend build checks; live MATLAB + provider-key golden eval is intended for scheduled/self-hosted CI.
