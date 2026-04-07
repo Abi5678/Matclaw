@@ -102,7 +102,7 @@ class WatchdogSettings(BaseModel):
 class SentrySettings(BaseModel):
     """Proactive sentry: monitor /data_in and trigger RPI on new files."""
 
-    enabled: bool = Field(default=True, description="Whether the sentry watchdog is active.")
+    enabled: bool = Field(default=False, description="Whether the sentry watchdog is active.")
     data_in_path: str = Field(default="data_in", description="Directory to watch for incoming files.")
 
 
@@ -116,7 +116,7 @@ class LabJournalSettings(BaseModel):
 class TelegramSettings(BaseModel):
     """Telegram gateway for alerts and remote commands."""
 
-    enabled: bool = Field(default=True, description="Whether the Telegram listener and alerts are active.")
+    enabled: bool = Field(default=False, description="Whether the Telegram listener and alerts are active.")
     bot_token: Optional[str] = Field(default=None, description="Bot token (or set TELEGRAM_BOT_TOKEN / TELEGRAM_TOKEN).")
     chat_id: Optional[str] = Field(default=None, description="Optional default chat ID for alerts (or set TELEGRAM_CHAT_ID).")
 
@@ -128,12 +128,14 @@ class HITLSettings(BaseModel):
     threshold_seconds: float = Field(default=600.0, description="Estimate above this triggers 'Proceed? [Yes/No]'.")
 
 
+_VALID_LLM_PROVIDERS = frozenset({"nvidia", "google", "anthropic", "openai-compatible"})
+
 class LLMSettings(BaseModel):
     """LLM for NL routing and vision: Anthropic, Google (Gemini), or NVIDIA (Nemotron)."""
 
     provider: str = Field(
         default="nvidia",
-        description="One of: anthropic, google, nvidia.",
+        description="One of: anthropic, google, nvidia, openai-compatible.",
     )
     api_key: Optional[str] = Field(
         default=None,
@@ -162,6 +164,58 @@ class SyncSettings(BaseModel):
     cloud_path: str = Field(default="")
 
 
+class AgenticSettings(BaseModel):
+    """Autonomous agentic loop — iterative tool-use with observe-think-act cycle."""
+
+    enabled: bool = Field(default=True, description="Whether agentic mode is available.")
+    max_iterations: int = Field(default=10, description="Max tool-call iterations per request.")
+    max_tokens_per_step: int = Field(default=4096, description="Max tokens per LLM call in the loop.")
+
+
+class ProductionSettings(BaseModel):
+    """
+    Production / SLO-oriented limits and memory injection for agentic runs.
+    Env: MATCLAW_PRODUCTION__* (nested).
+    """
+
+    memory_inject_enabled: bool = Field(
+        default=True,
+        description="Inject Chroma query snippets into agentic user context when long-term memory is enabled.",
+    )
+    memory_n_results: int = Field(default=5, ge=1, le=20, description="Chunks to retrieve for memory injection.")
+    memory_max_chars: int = Field(default=4000, ge=500, le=32000, description="Max chars of memory context to prepend.")
+    store_agentic_episodes: bool = Field(
+        default=True,
+        description="Store a compact artifact after each agentic run for future retrieval.",
+    )
+    max_agentic_wall_seconds: float = Field(
+        default=600.0,
+        ge=30.0,
+        description="Hard wall-clock budget (seconds) for one agentic run; the loop stops when exceeded.",
+    )
+    agentic_max_concurrent: int = Field(
+        default=4,
+        ge=1,
+        le=128,
+        description="Max concurrent agentic streams per process (fairness / overload protection).",
+    )
+    soft_cost_cap_usd_per_task: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Soft ceiling (USD) on estimated spend per task; 0 disables. Requires token usage from the provider and non-zero rates below.",
+    )
+    usd_per_1k_prompt_tokens: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Your fully-loaded $/1k prompt tokens for soft-cap math (0 = still report tokens, no USD estimate).",
+    )
+    usd_per_1k_completion_tokens: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="$/1k completion tokens for soft-cap math (0 = still report tokens, no USD estimate).",
+    )
+
+
 class MatClawSettings(BaseSettings):
     """
     Typed application configuration, loaded from environment variables where present.
@@ -182,6 +236,8 @@ class MatClawSettings(BaseSettings):
     file_doctor: FileDoctorSettings = Field(default_factory=FileDoctorSettings)
     long_term_memory: LongTermMemorySettings = Field(default_factory=LongTermMemorySettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
+    agentic: AgenticSettings = Field(default_factory=AgenticSettings)
+    production: ProductionSettings = Field(default_factory=ProductionSettings)
 
     class Config:
         env_prefix = "MATCLAW_"

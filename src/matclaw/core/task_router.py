@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from src.matclaw.agents.registry import AgentRegistry
@@ -47,37 +48,55 @@ class TaskRouter:
             for a in self.agent_registry.list_agents() if a.callable_by_others
         ]
 
-    def build_dag(self, plan: DAGPlan) -> None:
-        """Construct the DAG from a list of predefined TaskNodes based on I/O matching."""
+    def build_dag(self, plan: DAGPlan, edges: list[dict] | None = None) -> None:
+        """Construct the DAG from TaskNodes and explicit edge list.
+
+        If *edges* is provided (from the frontend canvas), wiring uses the
+        ``source`` / ``target`` node IDs on each edge — which is the correct
+        topology.  Falls back to I/O-name matching only when no edge list is
+        available.
+        """
         self.nodes.clear()
         self.graph.clear()
-        
+
         for node in plan.nodes:
             self.nodes[node.id] = node
             self.graph[node.id] = []
 
-        # Connect edges based on output matching input requirements
-        for node in plan.nodes:
-            for required_input in node.inputs:
-                for potential_parent in plan.nodes:
-                    if required_input in potential_parent.outputs:
-                        self.graph[potential_parent.id].append(node.id)
+        if edges:
+            seen_edges: set[tuple[str, str]] = set()
+            for e in edges:
+                src = e.get("source", "")
+                tgt = e.get("target", "")
+                if src in self.nodes and tgt in self.nodes and (src, tgt) not in seen_edges:
+                    self.graph[src].append(tgt)
+                    seen_edges.add((src, tgt))
+        else:
+            seen_edges = set()
+            for node in plan.nodes:
+                for required_input in node.inputs:
+                    for potential_parent in plan.nodes:
+                        if required_input in potential_parent.outputs and (potential_parent.id, node.id) not in seen_edges:
+                            self.graph[potential_parent.id].append(node.id)
+                            seen_edges.add((potential_parent.id, node.id))
 
     def get_execution_order(self) -> List[str]:
         """
         Returns a list of node IDs in topological sort order.
         Raises ValueError if there is a circular dependency.
         """
+        from collections import deque
+
         in_degree = {n: 0 for n in self.nodes}
         for u in self.graph:
             for v in self.graph[u]:
                 in_degree[v] += 1
-                
-        queue = [n for n in self.nodes if in_degree[n] == 0]
+
+        queue = deque(n for n in self.nodes if in_degree[n] == 0)
         order = []
-        
+
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             order.append(node)
             for v in self.graph[node]:
                 in_degree[v] -= 1
@@ -97,3 +116,58 @@ class TaskRouter:
             if result is not None:
                 self.nodes[node_id].result = result
             logger.info(f"Node '{node_id}' updated to status: {status}")
+
+    def validate_pipeline(self, pipeline: dict) -> tuple[bool, str | None]:
+        """
+        Validate a pipeline dict for cycle-freedom and known agent IDs.
+        Returns (is_valid, error_message).
+        """
+        try:
+            dag, edges = pipeline_to_dag_plan(pipeline)
+            self.build_dag(dag, edges=edges)
+            self.get_execution_order()
+            return True, None
+        except ValueError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, f"Validation error: {e}"
+
+
+# ── Module-level helpers ───────────────────────────────────────────────────
+
+
+def pipeline_to_dag_plan(pipeline: dict) -> tuple["DAGPlan", list[dict]]:
+    """
+    Convert a visual pipeline dict (from the frontend canvas) into a
+    ``(DAGPlan, edges)`` tuple.  ``edges`` is the raw edge list so
+    ``build_dag`` can wire the graph using explicit ``source``/``target``
+    node IDs rather than matching on handle names.
+
+    The pipeline format:
+        {
+          "nodes": [{"id": "n1", "agent_id": "...", "config": {...}}],
+          "edges": [{"id": "e1", "source": "n1", "target": "n2", ...}]
+        }
+    """
+    edges = pipeline.get("edges", [])
+
+    task_nodes: List[TaskNode] = []
+    for n in pipeline.get("nodes", []):
+        node_id = n["id"]
+        cfg = n.get("config", {})
+        task_nodes.append(
+            TaskNode(
+                id=node_id,
+                description=cfg.get("task_description", n.get("label", node_id)),
+                inputs=[e.get("source_handle", "data") for e in edges if e.get("target") == node_id],
+                outputs=[e.get("source_handle", "data") for e in edges if e.get("source") == node_id],
+                agent_id=n.get("agent_id"),
+                execution_payload={
+                    "tool": cfg.get("tool", ""),
+                    "code": cfg.get("code", ""),
+                    "task": cfg.get("task_description", n.get("label", "")),
+                },
+            )
+        )
+
+    return DAGPlan(nodes=task_nodes), edges

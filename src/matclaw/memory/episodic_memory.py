@@ -71,6 +71,18 @@ class EpisodicMemoryManager:
         Summarizes the episodes for a task_id, stores the distilled lesson in Semantic Memory,
         and deletes the verbose episodes to keep context windows clean.
         """
-        # semantic_manager.store_artifact(key=task_id, metadata={"summary": "distilled lesson"})
+        episodes = self.retrieve_active_episodes(task_id)
+        if not episodes:
+            return
+        stages = [ep.state_machine_stage for ep in episodes]
+        summary = f"Task {task_id}: passed through stages [{', '.join(stages)}] with {len(episodes)} episode(s)."
+        if semantic_manager is not None:
+            try:
+                semantic_manager.store_artifact(
+                    key=f"episodic_{task_id}",
+                    metadata={"summary": summary, "task_id": task_id, "stages": ", ".join(stages)},
+                )
+            except Exception as e:
+                logger.debug("crystallize store_artifact failed: %s", e)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM episodic_memory WHERE task_id = ?", (task_id,))

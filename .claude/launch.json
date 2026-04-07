@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "matclaw-web",
+      "runtimeExecutable": "/opt/homebrew/Cellar/node/25.6.1/bin/node",
+      "runtimeArgs": ["/Users/abishek/MatClaw/web/node_modules/vite/bin/vite.js"],
+      "cwd": "/Users/abishek/MatClaw/web",
+      "port": 5173
+    },
+    {
+      "name": "matclaw-api",
+      "runtimeExecutable": "/opt/homebrew/Cellar/python@3.11/3.11.13/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python",
+      "runtimeArgs": ["-m", "uvicorn", "src.matclaw.api.server:app", "--host", "127.0.0.1", "--port", "8000"],
+      "cwd": "/Users/abishek/MatClaw",
+      "port": 8000
+    }
+  ]
+}

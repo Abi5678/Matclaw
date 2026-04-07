@@ -1,3 +1,4 @@
+import React from 'react'
 import { motion } from 'framer-motion'
 import { CheckCircle2, Loader2, Circle, AlertCircle } from 'lucide-react'
 
@@ -100,6 +101,61 @@ export default function TaskSequence({ phases, taskTitle }: TaskSequenceProps) {
     </div>
   )
 }
+
+// ── Compact horizontal step strip (Option A redesign) ──────────────────────
+
+export function TaskStepStrip({ phases, isLive }: { phases: TaskPhase[]; isLive?: boolean }) {
+  if (phases.length === 0) return null
+
+  const completedCount = phases.filter(p => p.status === 'completed').length
+  const activePhase = phases.find(p => p.status === 'active')
+  const allDone = completedCount === phases.length
+
+  return (
+    <div
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium flex-wrap"
+      style={{
+        backgroundColor: allDone ? 'var(--bg-hover)' : 'var(--accent-subtle)',
+        border: `1px solid ${allDone ? 'var(--border-subtle)' : 'color-mix(in srgb, var(--accent) 30%, transparent)'}`,
+      }}
+    >
+      {phases.map((phase, i) => (
+        <React.Fragment key={phase.id}>
+          <span
+            className="flex items-center gap-1 transition-colors"
+            style={{
+              color: phase.status === 'completed' ? 'var(--text-secondary)'
+                : phase.status === 'active' ? 'var(--accent)'
+                : 'var(--text-muted)',
+            }}
+          >
+            {phase.status === 'completed' ? (
+              <CheckCircle2 className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent)' }} />
+            ) : phase.status === 'active' ? (
+              <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={{ color: 'var(--accent)' }} />
+            ) : (
+              <Circle className="w-3 h-3 flex-shrink-0 opacity-30" />
+            )}
+            <span>{phase.label}</span>
+            {phase.status === 'completed' && phase.elapsed_ms != null && i === phases.length - 1 && (
+              <span className="opacity-60 ml-0.5">{(phase.elapsed_ms / 1000).toFixed(1)}s</span>
+            )}
+          </span>
+          {i < phases.length - 1 && (
+            <span className="opacity-25" style={{ color: 'var(--text-muted)' }}>·</span>
+          )}
+        </React.Fragment>
+      ))}
+      {isLive && activePhase && (
+        <span className="ml-1 opacity-60" style={{ color: 'var(--accent)' }}>
+          {activePhase.detail || '…'}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── Original vertical card (kept for legacy / expanded view) ───────────────
 
 function PhaseIndicator({ status }: { status: PhaseStatus }) {
   if (status === 'active') {

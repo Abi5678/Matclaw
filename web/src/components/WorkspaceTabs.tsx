@@ -1,6 +1,6 @@
-import { Workflow, Terminal, Code2, Globe, Bot, Settings } from 'lucide-react'
+import { Workflow, Terminal, Code2, Globe, Bot, Settings, GitFork } from 'lucide-react'
 
-export type WorkspaceTab = 'flow' | 'terminal' | 'editor' | 'browser' | 'agents' | 'settings'
+export type WorkspaceTab = 'flow' | 'terminal' | 'editor' | 'browser' | 'agents' | 'settings' | 'pipeline'
 
 interface WorkspaceTabsProps {
   activeTab: WorkspaceTab
@@ -13,6 +13,7 @@ const TABS: { id: WorkspaceTab; label: string; icon: React.ReactNode }[] = [
   { id: 'editor', label: 'Editor', icon: <Code2 className="w-3.5 h-3.5" /> },
   { id: 'browser', label: 'Browser', icon: <Globe className="w-3.5 h-3.5" /> },
   { id: 'agents', label: 'Agents', icon: <Bot className="w-3.5 h-3.5" /> },
+  { id: 'pipeline', label: 'Pipeline', icon: <GitFork className="w-3.5 h-3.5" /> },
   { id: 'settings', label: 'Settings', icon: <Settings className="w-3.5 h-3.5" /> },
 ]
 

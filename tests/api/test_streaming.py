@@ -47,6 +47,16 @@ async def test_health_endpoint(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "status" in data
+    assert "degraded" in data
+    assert "matlab" in data
+    assert "llm" in data
+    assert "api_key_configured" in data["llm"]
+    m = data["matlab"]
+    if isinstance(m, dict):
+        assert "healthy" in m
+        assert "busy" in m
+    else:
+        assert "matlab_busy" in data
 
 
 # ---------------------------------------------------------------------------

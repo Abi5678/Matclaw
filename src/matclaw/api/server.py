@@ -5,7 +5,7 @@ Endpoints:
   GET  /api/skills       — list available skills
   GET  /api/plots        — list saved plot files
   GET  /plots/{filename} — serve a plot image / GIF
-  GET  /health           — liveness check
+  GET  /health           — liveness + matlab session (matlab) and busy (matlab_busy)
 """
 from __future__ import annotations
 
@@ -48,9 +48,22 @@ from src.matclaw.core.static_analyzer import StaticAnalyzer
 from src.matclaw.memory.episodic_memory import EpisodicMemoryManager, Episode
 from src.matclaw.core.state_manager import AsyncStateTracker, ExecutionState
 from src.matclaw.memory.session_store import SessionStore
+from src.matclaw.core.pipeline_store import PipelineStore
+from src.matclaw.core.task_router import TaskRouter, pipeline_to_dag_plan
+from src.matclaw.core.runtimes import RuntimeRegistry, MatlabRuntime, PythonRuntime, ShellRuntime
+from src.matclaw.core.scheduler import Scheduler, ScheduledTask
+from src.matclaw.core.heartbeat import Heartbeat
+from src.matclaw.core.job_manager import JobManager
+from src.matclaw.api.auth import APIKeyStore
+from src.matclaw.api.middleware import EnterpriseMiddleware, MetricsStore
+from src.matclaw.tools.registry import tool_registry
+from src.matclaw.core.agentic_loop import run_agentic_loop
+from src.matclaw.core.code_doctor import run_code_doctor
+from src.matclaw.gateways.webhook import WebhookRequest, WebhookResponse
 
 import uuid
 from datetime import datetime
+from contextlib import asynccontextmanager, suppress
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -64,6 +77,26 @@ analyzer = StaticAnalyzer(bridge)
 episodic_memory = EpisodicMemoryManager(str(ROOT / ".matclaw_episodic.sqlite3"))
 state_tracker = AsyncStateTracker(str(ROOT / ".matclaw_async_state.json"))
 session_store = SessionStore(str(ROOT / ".matclaw_sessions.sqlite3"))
+pipeline_store = PipelineStore(str(ROOT / ".matclaw_pipelines.sqlite3"))
+_active_runs: dict[str, asyncio.Queue] = {}  # run_id → SSE event queue
+_headless_figure_task: asyncio.Task[None] | None = None  # deferred MATLAB GUI setup (must not block lifespan yield)
+
+# ── Enterprise singletons ────────────────────────────────────────────────────
+_key_store = APIKeyStore(str(ROOT / ".matclaw_auth.sqlite3"))
+_metrics = MetricsStore()
+_job_manager = JobManager(concurrency=2)
+_agentic_slot_semaphore = asyncio.Semaphore(max(1, settings.production.agentic_max_concurrent))
+
+# Runtime registry — populated after MATLAB bridge starts (see startup below)
+_runtime_registry = RuntimeRegistry()
+
+_scheduler = Scheduler(
+    db_path=str(ROOT / ".matclaw_scheduler.sqlite3"),
+    job_manager=_job_manager,
+    runtime_registry=_runtime_registry,
+    heartbeat_seconds=settings.daemon.heartbeat_interval_seconds,
+)
+_heartbeat = Heartbeat(scheduler=_scheduler, job_manager=_job_manager)
 
 import json
 
@@ -86,6 +119,8 @@ Communication style:
 
 You have access to these actions:
 - "run_matlab": Execute MATLAB code (plots, simulations, animations, computations)
+- "run_python": Execute Python code (data science, scripting, pandas/numpy/matplotlib tasks)
+- "run_shell": Execute a shell/bash command (file ops, system info, CLI tools)
 - "project_gen": Create multi-file projects in any language (MATLAB, Python, HTML, etc.)
 - "query_memory": Recall past runs and experiments
 - "multi_agent_swarm": Break a complex task into a DAG and delegate to specialized agents.
@@ -94,18 +129,164 @@ You have access to these actions:
 Given the user's message and conversation history, respond with ONLY a valid JSON object (no markdown fences):
 {
   "reply": "Your warm, conversational response. Use markdown formatting.",
-  "action": "run_matlab" | "project_gen" | "query_memory" | "multi_agent_swarm" | "none",
-  "code": "Raw MATLAB code if action is run_matlab. null otherwise.",
+  "action": "run_matlab" | "run_python" | "run_shell" | "project_gen" | "query_memory" | "multi_agent_swarm" | "none",
+  "code": "Raw code for the chosen runtime. null for non-execution actions.",
   "project": {"name": "project_name", "description": "...", "files": [{"filename": "main.m", "language": "matlab", "content": "..."}]} or null,
   "dag_plan": {"nodes": [{"id":"node_1", "description":"do x", "inputs":[], "outputs":["data"], "agent_id":"agent-id"}]} or null
 }
+
+Runtime selection rules (STRICT — never override these):
+- Any request mentioning plot / graph / visualize / simulate / compute / calculate / solve / matrix / fft / ode / surf / mesh / contour / animate → ALWAYS use run_matlab
+- Python/pandas/numpy/ML/sklearn/torch keywords → ALWAYS use run_python
+- Shell/bash/ls/curl/grep/system keywords → ALWAYS use run_shell
+- Use "none" ONLY for pure Q&A with NO computation requested (e.g. "what is a PID controller?")
+- When in doubt between run_matlab and none → use run_matlab
+
+IMPORTANT: If a user asks you to "plot", "draw", "compute", "run", "simulate", or "generate" anything — you MUST use an execution action, never "none".
 
 Rules for code generation:
 - Use ONLY built-in MATLAB functions (plot, surf, mesh, fft, disp, fprintf, etc.)
 - Do NOT call LLM, AI, GPT, Claude, MatClaw, or any non-MATLAB function
 - For animations, use drawnow inside loops
 - For projects, put each function in its own .m file; first file is the entry point
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CODE QUALITY STANDARDS — always follow these
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+VISUALISATION — every plot must:
+1. Use figure('Position',[50 50 1100 750]) for a large canvas
+2. Use subplot() grids — never just one panel for multi-aspect requests
+   - Simulations: 3D path + top-view XY + altitude profile + speed/velocity panels
+   - Signal work: time-domain + frequency-domain + spectrogram side by side
+   - Control: step response + Bode + pole-zero map
+3. Colour-code trajectories by speed/time using a loop + colormap:
+   cmap = jet(N);
+   for i = 1:N-1
+     plot3([x(i) x(i+1)],[y(i) y(i+1)],[z(i) z(i+1)],'Color',cmap(i,:),'LineWidth',2);
+     hold on;
+   end
+4. Add sgtitle() with key stats (max value, duration, units)
+5. Label EVERY axis with units: xlabel('Time (s)'), ylabel('Altitude (m)')
+6. Use grid on; on every subplot
+7. Mark key events: scatter3 for waypoints, xline() for phase boundaries, text() for labels
+8. Use area() or fill() for shaded profiles instead of plain plot()
+9. Use yyaxis for dual-unit panels (e.g. altitude + speed on same time axis)
+
+PHYSICS & SIMULATION — always:
+1. Break missions/scenarios into named phases with if/elseif blocks
+2. Compute velocity with gradient(position, dt) — never assume constant speed
+3. Smooth noisy derivatives: movmean(signal, window)
+4. Pre-allocate arrays: x = zeros(N,1) before loops
+5. Print a stats summary with fprintf at the end:
+   fprintf('Max altitude: %.2f m | Max speed: %.2f m/s | Duration: %.0f s\n', ...)
+6. Use realistic parameters scaled to the domain:
+   - drone/quadrotor: radius 3-5m, altitude 5-10m, speed 5-15 m/s, T=20s
+   - rocket/launch vehicle/Starship: altitude 0-400km, speed 0-8000 m/s, T=600s, Isp~360s
+   - satellite orbit: altitude 400km, speed 7800 m/s, orbital period 5500s
+   - aircraft: altitude 0-12000m, speed 0-280 m/s, T=300s
+   - pendulum/robot: angles in radians, length 0.5-2m, period based on sqrt(L/g)
+
+EXAMPLE — drone simulation structure (use this as a template):
+  t = (0:dt:T)';  N = numel(t);
+  x=zeros(N,1); y=zeros(N,1); z=zeros(N,1);
+  for i=1:N
+    ti=t(i);
+    if ti<5          % Phase 1: takeoff
+      z(i)=0.3*ti^2; x(i)=0; y(i)=0;
+    elseif ti<12     % Phase 2: helical ascent
+      ph=(ti-5)*0.8; r=3;
+      x(i)=r*cos(ph); y(i)=r*sin(ph); z(i)=4+(ti-5)*0.5;
+    elseif ti<18     % Phase 3: orbit
+      ph=(ti-12)*1.1; r=4;
+      x(i)=r*cos(ph); y(i)=r*sin(ph); z(i)=7.5;
+    else             % Phase 4: land
+      frac=(ti-18)/4; x(i)=(1-frac)*4; y(i)=0; z(i)=7.5*(1-frac)^2;
+    end
+  end
+  vx=gradient(x,dt); vy=gradient(y,dt); vz=gradient(z,dt);
+  speed=movmean(sqrt(vx.^2+vy.^2+vz.^2),5);
+
+EXAMPLE — Starship/rocket launch to orbit (use for any rocket/space simulation):
+  dt=1; T=600; t=(0:dt:T)'; N=numel(t);
+  alt=zeros(N,1); vr=zeros(N,1);
+  for i=1:N
+    ti=t(i);
+    if ti<90          % Phase 1: launch & max-q  (0-90s, alt 0-40km)
+      alt(i)=0.5*4.0*(ti)^2;          % constant 4 m/s^2 accel
+    elseif ti<180     % Phase 2: booster sep     (90-180s, alt 40-120km)
+      alt(i)=40000 + 0.5*6*(ti-90)^2;
+    elseif ti<420     % Phase 3: vacuum burn     (180-420s, alt 120-400km)
+      frac=(ti-180)/240;
+      alt(i)=120000 + 280000*frac;
+    else              % Phase 4: orbit insertion (420-600s, stable orbit)
+      alt(i)=400000 + 500*sin((ti-420)*2*pi/180);
+    end
+  end
+  vr=gradient(alt,dt); speed=movmean(abs(vr),5);
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
+
+_SIM_KEYWORDS = {
+    "simulation", "simulate", "drone", "quadrotor", "robot", "trajectory",
+    "pid", "controller", "ode", "dynamics", "pendulum", "vehicle", "aircraft",
+    "missile", "satellite", "orbit", "kinematics", "motion", "path planning",
+    "flight", "autopilot", "control system", "state space", "transfer function",
+}
+
+_VIZ_KEYWORDS = {
+    "plot", "graph", "visualize", "visualise", "draw", "show", "display",
+    "surface", "surf", "mesh", "contour", "heatmap", "scatter", "histogram",
+    "animation", "animate", "3d", "dashboard", "chart",
+}
+
+def _classify_intent(text: str) -> str:
+    """
+    Classify the user's request to decide if extra quality context should be injected.
+    Returns: 'simulation' | 'visualization' | 'general'
+    """
+    lower = text.lower()
+    if any(kw in lower for kw in _SIM_KEYWORDS):
+        return "simulation"
+    if any(kw in lower for kw in _VIZ_KEYWORDS):
+        return "visualization"
+    return "general"
+
+
+_SIMULATION_BOOST = """
+[SIMULATION REQUEST DETECTED — MANDATORY QUALITY REQUIREMENTS]
+This is a dynamics/simulation task. You MUST:
+1. Implement multiple mission phases (at least 3-4) with if/elseif blocks — NOT a single parametric formula
+2. Use gradient(position, dt) to compute velocity — NEVER assume constant speed
+3. Use movmean() to smooth velocity/speed signals (window=5 minimum)
+4. Scale parameters REALISTICALLY for the domain:
+   - drone/quadrotor: altitude 5-10m, speed 5-15 m/s, T=20s
+   - rocket/Starship/launch vehicle: altitude 0-400km (400000m), speed 0-7800 m/s, T=600s (10 min)
+   - satellite: altitude 400km, orbital speed 7800 m/s, period 5500s
+   - aircraft: altitude 0-12000m, speed 0-280 m/s, T=300s
+5. Generate a multi-panel figure (minimum 4 subplots):
+   - Panel 1 (large, left): 3D trajectory, colour-coded by speed using a loop+colormap
+   - Panel 2: top-view XY plot with start/end markers
+   - Panel 3: altitude profile using area() fill, with xline() phase markers + text labels
+   - Panel 4: speed profile using fill() or area() shading
+6. Call sgtitle() with key stats: max altitude, max speed, total duration
+7. Print stats with fprintf at the end
+8. Use figure('Position',[50 50 1100 780]) for a large canvas
+DO NOT use tiny scale numbers. DO NOT generate a simple parametric helix. Generate REAL phased mission dynamics with correct engineering units.
+DO NOT call external functions — all code MUST be self-contained in a single script. No function calls to undefined helpers.
+"""
+
+_VISUALIZATION_BOOST = """
+[VISUALIZATION REQUEST DETECTED — MANDATORY QUALITY REQUIREMENTS]
+This is a visualization task. You MUST:
+1. Use figure('Position',[50 50 1100 750]) — large canvas
+2. Use multiple subplots showing different aspects/projections
+3. Use colormaps and colour-coded data where applicable
+4. Label all axes with units, add grid on, add a descriptive title
+5. Use area(), fill(), or patch() for shaded regions instead of plain plot lines
+6. Add annotations: text(), legend(), colorbar() where appropriate
+"""
+
 
 def _build_messages(
     user_text: str,
@@ -113,6 +294,13 @@ def _build_messages(
     history: list[dict[str, str]] | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
     """Build (system_arg, messages) for the LLM call. Shared by sync and streaming paths."""
+    # Inject intent-specific quality boost into the system prompt
+    intent = _classify_intent(user_text)
+    if intent == "simulation":
+        system = system + _SIMULATION_BOOST
+    elif intent == "visualization":
+        system = system + _VISUALIZATION_BOOST
+
     # Dynamically append registered agent context to the system prompt
     try:
         from src.matclaw.agents.registry import AgentRegistry
@@ -167,6 +355,36 @@ def _llm_chat(user_text: str, system: str = MATCLAW_PERSONA,
         return ""
 
 
+def _escape_json_control_chars(s: str) -> str:
+    """
+    Escape raw control characters (newlines, tabs, etc.) that appear literally
+    inside JSON string values. The LLM sometimes emits actual newlines within a
+    quoted value, which makes json.loads raise 'Invalid control character'.
+    """
+    result: list[str] = []
+    in_string = False
+    escape_next = False
+    _ctrl = {'\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f'}
+    for ch in s:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\':
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ord(ch) < 0x20:
+            result.append(_ctrl.get(ch, f'\\u{ord(ch):04x}'))
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
 def _parse_llm_response(raw: str) -> dict[str, Any]:
     """Parse the LLM's JSON response, handling markdown fences and malformed output."""
     if not raw:
@@ -180,11 +398,16 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
-    # Try to extract the first {...} block
+    # Escape literal control chars inside string values and retry
+    try:
+        return json.loads(_escape_json_control_chars(cleaned))
+    except json.JSONDecodeError:
+        pass
+    # Try to extract the first {...} block (handles trailing garbage)
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group())
+            return json.loads(_escape_json_control_chars(match.group()))
         except json.JSONDecodeError:
             pass
     # LLM sometimes omits outer braces — wrap and retry
@@ -193,6 +416,33 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
             return json.loads("{" + cleaned + "}")
         except json.JSONDecodeError:
             pass
+    # ── Truncated JSON recovery ───────────────────────────────────────────
+    # NVIDIA streaming sometimes cuts off the response mid-code-string.
+    # Rescue what we can: extract "reply", "action", "code" via targeted regex
+    # even from malformed/incomplete JSON.
+    rescued: dict[str, Any] = {}
+    _reply_m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned, re.DOTALL)
+    if _reply_m:
+        try:
+            rescued["reply"] = json.loads('"' + _reply_m.group(1) + '"')
+        except Exception:
+            rescued["reply"] = _reply_m.group(1).replace('\\"', '"')
+    _action_m = re.search(r'"action"\s*:\s*"(\w+)"', cleaned)
+    if _action_m:
+        rescued["action"] = _action_m.group(1)
+    # Code: grab everything after "code": " up to end (truncated string ok)
+    _code_m = re.search(r'"code"\s*:\s*"(.*)', cleaned, re.DOTALL)
+    if _code_m:
+        raw_code = _code_m.group(1)
+        # Strip trailing: ",\n  "project"... or just end of string
+        raw_code = re.sub(r'",?\s*\n?\s*"(?:project|dag_plan)".*$', '', raw_code, flags=re.DOTALL).rstrip('",')
+        try:
+            rescued["code"] = json.loads('"' + raw_code + '"')
+        except Exception:
+            # Manual unescape of \n \t \\
+            rescued["code"] = raw_code.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
+    if rescued:
+        return rescued
 
     # ── Plain-text fallback: LLM didn't produce JSON ──────────────────────
     # Extract code blocks (```matlab ... ```) from plain text
@@ -219,27 +469,131 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
 PLOTS_DIR = ROOT / "plots"
 PLOTS_DIR.mkdir(exist_ok=True)
 
-# Connect to the running MATLAB session on startup
-logger.info("Connecting to MATLAB session...")
-try:
-    bridge.start()
-    if bridge.is_healthy():
-        logger.info("MATLAB connected successfully.")
-    else:
-        # Try connecting to any available shared session
-        import matlab.engine as _me  # type: ignore
-        sessions = _me.find_matlab()
-        if sessions:
-            bridge.settings.session_name = sessions[0]
-            bridge.start()
-            logger.info("Connected to shared MATLAB session: %s", sessions[0])
+
+def _check_plot_quality(plot_path: str, matlab_output: str) -> dict:
+    """Check plot quality using PIL pixel statistics. No API key needed."""
+    issues: list[str] = []
+
+    # Check A: MATLAB error in output
+    if "MATLAB error:" in matlab_output or "execution failed" in matlab_output.lower():
+        return {"status": "error", "issues": ["MATLAB execution error"]}
+
+    # Check B: PIL-based blank detection
+    if plot_path and os.path.exists(plot_path):
+        try:
+            from PIL import Image
+            import numpy as np
+            arr = np.array(Image.open(plot_path).convert("RGB"))
+            std = float(arr.std())
+            if std < 8:
+                issues.append(f"plot is blank or nearly empty (pixel std={std:.1f})")
+            elif std < 15:
+                issues.append(f"plot has very low visual content (pixel std={std:.1f}) — may be missing data")
+        except Exception as exc:
+            logger.debug("PIL quality check failed: %s", exc)
+
+    # Check C: No meaningful output
+    stripped = matlab_output.strip()
+    if not stripped or (stripped.startswith("MATLAB executed successfully") and len(stripped) < 50):
+        issues.append("no meaningful output or stats printed")
+
+    return {"status": "poor" if issues else "good", "issues": issues}
+
+
+def _sentry_retry_code(original_request: str, original_code: str, issues: list[str]) -> str:
+    """Ask the LLM to fix the code given a list of detected issues."""
+    issue_summary = "; ".join(issues)
+    prompt = (
+        f"The previous MATLAB code had quality issues: {issue_summary}.\n\n"
+        f"Original request: {original_request}\n\n"
+        f"Original code:\n```matlab\n{original_code}\n```\n\n"
+        "Fix these specific issues and return ONLY the corrected MATLAB code block. "
+        "Do not include any explanation — just the fixed code."
+    )
+    return _llm_chat(prompt, system=MATCLAW_PERSONA)
+
+
+
+# ── lifespan — starts/stops all background services ──────────────────────────
+async def _apply_matlab_headless_figures() -> None:
+    """
+    Suppress figure windows for the server session. Runs **after** the HTTP server
+    is listening — a slow or stuck MATLAB eval must not block page load.
+    """
+    try:
+        if not bridge.is_healthy():
+            return
+        from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
+
+        req = MatlabCallRequest(
+            function="eval",
+            args=["set(0, 'DefaultFigureVisible', 'off'); set(0, 'DefaultFigureWindowStyle', 'docked');"],
+            nargout=0,
+        )
+        await asyncio.wait_for(
+            asyncio.to_thread(bridge.call, req),
+            timeout=120.0,
+        )
+        logger.info("MATLAB figure visibility: OFF (headless mode active)")
+    except asyncio.TimeoutError:
+        logger.warning("Headless MATLAB figure setup timed out after 120s; UI and API remain available.")
+    except Exception as _fig_e:
+        logger.debug("Could not set headless mode: %s", _fig_e)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _headless_figure_task
+    # Connect to MATLAB in a background thread to prevent startup hangs
+    logger.info("Connecting to MATLAB session (non-blocking)...")
+    try:
+        await asyncio.to_thread(bridge.start)
+        if bridge.is_healthy():
+            logger.info("MATLAB connected successfully.")
         else:
-            logger.warning("No MATLAB session found — bridge will retry on first request.")
-except Exception as _e:
-    logger.warning("MATLAB startup skipped: %s", _e)
+            # Try connecting to any available shared session
+            import matlab.engine as _me  # type: ignore
+            sessions = await asyncio.to_thread(_me.find_matlab)
+            if sessions:
+                bridge.settings.session_name = sessions[0]
+                await asyncio.to_thread(bridge.start)
+                logger.info("Connected to shared MATLAB session: %s", sessions[0])
+            else:
+                logger.warning("No MATLAB session found — bridge will retry on first request.")
+    except Exception as _e:
+        logger.warning("MATLAB startup skipped or failed: %s", _e)
+
+    # Register runtimes now that bridge is live
+    _runtime_registry.register(MatlabRuntime(bridge, _run_matlab_and_collect))
+    _runtime_registry.register(PythonRuntime(cwd=str(ROOT), venv_python=sys.executable))
+    _runtime_registry.register(ShellRuntime(cwd=str(ROOT)))
+    # Auto-discover pluggable tools
+    tool_registry.discover()
+    # Start daemon
+    _heartbeat.start()
+    logger.info("MatClaw enterprise daemon started. Runtimes: %s",
+                [r["name"] for r in _runtime_registry.list_runtimes()])
+
+    # Defer headless MATLAB eval until after yield — Uvicorn does not accept connections until yield.
+    async def _headless_after_bind() -> None:
+        await asyncio.sleep(0.05)
+        await _apply_matlab_headless_figures()
+
+    _headless_figure_task = asyncio.create_task(_headless_after_bind())
+
+    yield
+
+    if _headless_figure_task and not _headless_figure_task.done():
+        _headless_figure_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _headless_figure_task
+    _headless_figure_task = None
+    _heartbeat.stop()
+    logger.info("MatClaw daemon stopped.")
+
 
 # ── app ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title="MatClaw API", version="2.0.0")
+app = FastAPI(title="MatClaw API", version="2.0.0", lifespan=lifespan)
 
 # Initialize subsystems
 agent_registry = AgentRegistry()
@@ -249,6 +603,15 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Enterprise middleware (auth off by default — enable via MATCLAW_AUTH__ENABLED=true)
+_auth_enabled = os.environ.get("MATCLAW_AUTH__ENABLED", "false").lower() == "true"
+app.add_middleware(
+    EnterpriseMiddleware,
+    key_store=_key_store,
+    auth_enabled=_auth_enabled,
+    metrics=_metrics,
 )
 
 app.mount("/plots", StaticFiles(directory=str(PLOTS_DIR)), name="plots")
@@ -267,10 +630,18 @@ if _FRONTEND_DIST.is_dir():
 
 # ── request / response models ────────────────────────────────────────────────
 class RunRequest(BaseModel):
-    text: str
+    text: str = ""
+    message: str = ""      # alias used by CLI / webhook
     session_id: str = "default"
     history: list[dict[str, str]] = []  # [{"role": "user", "text": "..."}, ...]
     mode: str = "auto"  # "ask" | "auto" | "plan" | "agentic"
+    force_runtime: str | None = None  # "matlab" | "python" | "shell" — bypasses NL routing
+    sentry_mode: bool = False   # auto-check result quality and retry on failure
+    doctor_mode: bool = False   # run CodeDoctor auto-debug loop (opt-in; can block server during retries)
+
+    @property
+    def effective_text(self) -> str:
+        return self.text or self.message
 
 
 class RunResponse(BaseModel):
@@ -300,15 +671,16 @@ def _capture_animated_gif(code: str, base_name: str) -> str | None:
     if "drawnow" not in code and ("for " not in code and "while " not in code):
         return None
 
-    frame_dir = PLOTS_DIR / f"_frames_{base_name}"
+    safe_base = re.sub(r'[^a-zA-Z0-9_-]', '_', base_name)[:60]
+    frame_dir = PLOTS_DIR / f"_frames_{safe_base}"
     frame_dir.mkdir(exist_ok=True)
 
     frame_dir_str = str(frame_dir).replace("'", "''")
+    sanitized_code = _sanitize_matlab_code(code)
     inject = (
         f"mc_frame_dir = '{frame_dir_str}';\n"
         "mc_frame_n = 0;\n"
     )
-    # Wrap every drawnow with a frame save
     instrumented = re.sub(
         r"drawnow\s*;?",
         lambda m: (
@@ -317,7 +689,7 @@ def _capture_animated_gif(code: str, base_name: str) -> str | None:
             "exportgraphics(gcf, fullfile(mc_frame_dir, sprintf('frame_%04d.png', mc_frame_n)), 'Resolution', 72); "
             "end"
         ),
-        code,
+        sanitized_code,
     )
     _run_via_script(inject + instrumented)
 
@@ -354,19 +726,50 @@ def _run_via_script(code: str) -> tuple[bool, str]:
     import tempfile
     from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
 
+    # Write as ASCII-only — MATLAB parser rejects non-ASCII characters
+    # (smart quotes, em-dashes, pi symbol, arrows, etc.) in .m files,
+    # even when inside string literals. Strip the entire code block.
+    ascii_code = (
+        code
+        .replace('\u2014', '-')   # em-dash -> hyphen
+        .replace('\u2013', '-')   # en-dash -> hyphen
+        .replace('\u2018', "'")   # left single quote -> apostrophe
+        .replace('\u2019', "'")   # right single quote -> apostrophe
+        .replace('\u201c', '"')   # left double quote -> quote
+        .replace('\u201d', '"')   # right double quote -> quote
+        .replace('\u03c0', 'pi')  # π -> pi
+        .replace('\u03c9', 'omega')  # ω -> omega
+        .replace('\u03b1', 'alpha')  # α -> alpha
+        .replace('\u2192', '->')  # → -> ->
+        .replace('\u00b2', '^2')  # ² -> ^2
+        .replace('\u00b3', '^3')  # ³ -> ^3
+        .encode("ascii", errors="replace").decode("ascii")
+    )
     with tempfile.NamedTemporaryFile(suffix=".m", delete=False, mode="w",
                                      encoding="ascii", errors="replace") as f:
-        f.write(code)
+        f.write(ascii_code)
         script_path = f.name.replace("\\", "/")
 
     try:
         escaped = script_path.replace("'", "''")
         matlab_cmd = f"evalc(\"run('{escaped}')\")"
-        req = MatlabCallRequest(function="eval", args=[matlab_cmd], nargout=1)
+        req = MatlabCallRequest(
+            function="eval",
+            args=[matlab_cmd],
+            nargout=1,
+            timeout_seconds=90.0,  # Hard per-script cap — CodeDoctor will simplify if needed
+        )
         result = bridge.call(req)
         if result.success:
             return True, str(result.result or "").strip()
-        return False, result.error or "Unknown MATLAB error"
+        # If it timed out, surface a clear actionable message
+        err = result.error or "Unknown MATLAB error"
+        if "timed out" in err.lower():
+            return False, (
+                "MATLAB script timed out (90s limit). "
+                "The simulation has too many iterations — reduce dt, shorten T, or vectorize loops."
+            )
+        return False, err
     finally:
         try:
             os.unlink(script_path)
@@ -374,36 +777,266 @@ def _run_via_script(code: str) -> tuple[bool, str]:
             pass
 
 
+def _sanitize_matlab_code(code: str) -> str:
+    """
+    Auto-repair common LLM MATLAB code mistakes before execution.
+
+    Fixed patterns:
+    1. jet(N)(i,:)        -> cmap = jet(N) pre-declared, cmap(i,:)
+    2. \\end{...}          -> remove LaTeX remnants
+    3. scatter(x,y,'c','Label') -> scatter(x,y,80,'c','filled')
+    4. xline(v,'Label')   -> xline(v,'--','Label')
+    5. area(t,z,'b')      -> area(t,z,'FaceColor','b','FaceAlpha',0.5)
+    6. fill(t,y,'b')      -> closed polygon fill
+    7. fprintf with literal newline inside single-quoted string
+    """
+    import re as _re
+
+    # 1: jet(N)(i,:) -> cmap pre-declared
+    if _re.search(r'jet\(\w+\)\(\w+,:\)', code):
+        n_var = _re.search(r'jet\((\w+)\)', code)
+        n_arg = n_var.group(1) if n_var else "N"
+        code = _re.sub(r'jet\(\w+\)\((\w+),:\)', lambda m: f'cmap({m.group(1)},:)', code)
+        code = _re.sub(r'(for\s+\w+\s*=\s*1\s*:\s*\w+-1)',
+                      f'cmap = jet({n_arg});\\n\\1', code, count=1)
+
+    # 2: Remove LaTeX \end{...} remnants
+    code = _re.sub(r'\\\\end\{[^}]*\}\s*', '', code)
+
+    # 3: scatter(x,y,'color','Label') -> scatter(x,y,80,'color','filled')
+    code = _re.sub(
+        r"scatter\(([^,]+),\s*([^,]+),\s*'([a-z])'\s*,\s*'[^']*'\)",
+        r"scatter(\1, \2, 80, '\3', 'filled')",
+        code
+    )
+
+    # 4: xline(v,'Label') -> xline(v,'--','Label')
+    code = _re.sub(
+        r"xline\(([^,)]+),\s*'([^'-][^']*)'\)",
+        r"xline(\1, '--', '\2')",
+        code
+    )
+
+    # 5: area(t,z,'b') -> area(t,z,'FaceColor','b')
+    code = _re.sub(
+        r"\barea\(([^,]+),\s*([^,]+),\s*'([a-z])'\)",
+        r"area(\1, \2, 'FaceColor', '\3', 'FaceAlpha', 0.5)",
+        code
+    )
+
+    # 6: fill(t,speed,'b') -> closed polygon
+    def _fix_fill(m):
+        xa, ya, ca = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+        return (f"fill([{xa}; flipud({xa})], [{ya}; zeros(size({xa}))], "
+                f"'{ca}', 'FaceAlpha', 0.2, 'EdgeColor', 'none')")
+    code = _re.sub(r"\bfill\(([^,)]+),\s*([^,)]+),\s*'([a-z])'\)", _fix_fill, code)
+
+    # 7: Raw literal newline inside fprintf single-quoted string
+    def _fix_fprintf(m):
+        return m.group(0).replace('\n', '\\n')
+    code = _re.sub(r"fprintf\('[^']*\n[^']*'\)", _fix_fprintf, code)
+
+    # 8: scatter3(x,y,z,'c','o','MarkerSize',N) -> scatter3(x,y,z,N,'c','filled')
+    #    scatter3(x,y,z,'c','o') -> scatter3(x,y,z,80,'c','filled')
+    def _fix_scatter3(m):
+        x, y, z, rest = m.group(1).strip(), m.group(2).strip(), m.group(3).strip(), m.group(4)
+        # Extract color char and optional MarkerSize
+        color_m = _re.search(r"'([a-z])'", rest)
+        size_m = _re.search(r"'MarkerSize'\s*,\s*(\d+)", rest, _re.IGNORECASE)
+        color = color_m.group(1) if color_m else 'b'
+        sz = size_m.group(1) if size_m else '80'
+        return f"scatter3({x}, {y}, {z}, {sz}, '{color}', 'filled')"
+    code = _re.sub(
+        r"\bscatter3\(([^,]+),\s*([^,]+),\s*([^,]+),\s*([^)]+)\)",
+        lambda m: _fix_scatter3(m) if _re.search(r"'[a-z]'", m.group(4)) else m.group(0),
+        code
+    )
+
+    # 9: scatter(x,y,'c','o','MarkerSize',N) and scatter(x,y,'c','o')
+    def _fix_scatter2(m):
+        x, y, rest = m.group(1).strip(), m.group(2).strip(), m.group(3)
+        color_m = _re.search(r"'([a-z])'", rest)
+        size_m = _re.search(r"'MarkerSize'\s*,\s*(\d+)", rest, _re.IGNORECASE)
+        color = color_m.group(1) if color_m else 'b'
+        sz = size_m.group(1) if size_m else '80'
+        return f"scatter({x}, {y}, {sz}, '{color}', 'filled')"
+    code = _re.sub(
+        r"\bscatter\(([^,]+),\s*([^,)]+),\s*([^)]+)\)",
+        lambda m: _fix_scatter2(m) if _re.search(r"(?:'[a-z]'.*'MarkerSize'|'[a-z]'\s*,\s*'o')", m.group(3)) else m.group(0),
+        code
+    )
+
+    # 10: Fix 'FaceColor', 'gray' -> [0.5 0.5 0.5]
+    code = _re.sub(r"'(FaceColor|EdgeColor|Color|MarkerFaceColor|MarkerEdgeColor)'\s*,\s*'gray'", r"'\1', [0.5 0.5 0.5]", code, flags=_re.IGNORECASE)
+
+    return code
+
+
+def _should_use_matlab_batch(code: str) -> bool:
+    """
+    Whether to run via `matlab -batch` subprocess vs the shared engine.
+
+    Batch spawns a **new MATLAB process** (cold start often 30–120s) — it must
+    not be used for routine plotting. The old heuristic treated almost every plot
+    as "complex" (multi-line, `figure`, `subplot`, len>200), which caused simple
+    surf/mesh plots to hang or time out while users saw "MATLAB offline" / busy.
+
+    Reserve batch for long scripts, loops, ODEs, and Simulink-style runs.
+    Set MATCLAW_MATLAB_FORCE_BATCH=1 to always batch (debug).
+    """
+    if os.environ.get("MATCLAW_MATLAB_FORCE_BATCH", "").lower() in ("1", "true", "yes"):
+        return True
+    # Keeps FastAPI responsive: in-process Engine can hold the GIL during eval.
+    if os.environ.get("MATCLAW_MATLAB_SUBPROCESS_ONLY", "").lower() in ("1", "true", "yes"):
+        return True
+    c = code.strip()
+    if not c:
+        return False
+    nl = c.count("\n")
+    if nl > 80 or len(c) > 20000:
+        return True
+    if re.search(r"\bfor\s+", c) or re.search(r"\bwhile\s+", c):
+        return True
+    if re.search(r"\bode45\s*\(", c, re.IGNORECASE) or re.search(r"\bode\d+\s*\(", c, re.IGNORECASE):
+        return True
+    if re.search(r"\bsim\s*\(", c) or "simulink" in c.lower():
+        return True
+    if "parfor" in c:
+        return True
+    return False
+
+
 def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
-    """Run MATLAB code, collect stdout + plots, return (output_text, plot_urls)."""
-    ts = int(time.time())
+    """
+    Run MATLAB code, collect stdout + plots, return (output_text, plot_urls).
+
+    Execution strategy (two-tier):
+    1. BATCH MODE  — `matlab -batch` subprocess for heavy / risky work (loops, ODEs,
+                     very long scripts). Isolated; slow cold start per run.
+    2. ENGINE MODE — shared MATLAB Engine for Python (default for plots & short scripts).
+    """
+    from src.matclaw.matlab.batch_runner import (
+        MATLAB_BIN,
+        run_batch,
+        split_matlab_script_and_local_functions,
+    )
+
+    ts = f"{int(time.time())}_{uuid.uuid4().hex[:6]}"
     plot_name = f"plot_{ts}"
     plots: list[str] = []
 
     gif_url = _capture_animated_gif(code, plot_name)
-
     if gif_url:
         plots.append(gif_url)
-        output = f"Animation rendered: {gif_url.split('/')[-1]}"
+        return f"Animation rendered: {gif_url.split('/')[-1]}", plots
+
+    # Auto-repair common LLM MATLAB code mistakes
+    code = _sanitize_matlab_code(code)
+
+    # ── Tier 1: Batch subprocess (heavy simulations only) ─────────────────────
+    if MATLAB_BIN and _should_use_matlab_batch(code):
+        logger.info("MATLAB batch mode: executing in isolated subprocess (no desktop risk)")
+        with bridge.external_busy():
+            ok, output, batch_plots = run_batch(
+                code=code,
+                plots_dir=str(PLOTS_DIR),
+                timeout=240.0,   # 4 min — kills subprocess only, never the engine
+                plot_name=plot_name,
+            )
+        plots.extend(batch_plots)
+        if not ok:
+            # Prepend indicator so CodeDoctor knows this is a batch error
+            output = f"MATLAB error: {output}"
+        return output, plots
+
+    # ── Tier 2: Shared engine (fast, for simple calls) ────────────────────────
+    # If the engine was just restarted from a previous timeout, wait a moment and
+    # fall back to batch (engine may not be fully up yet).
+    if bridge.needs_restart() and MATLAB_BIN:
+        logger.info("MATLAB engine still restarting after timeout — using batch fallback")
+        with bridge.external_busy():
+            ok, output, batch_plots = run_batch(
+                code=code,
+                plots_dir=str(PLOTS_DIR),
+                timeout=240.0,
+                plot_name=plot_name,
+            )
+        plots.extend(batch_plots)
+        if not ok:
+            output = f"MATLAB error: {output}"
+        return output, plots
+
+    # ── Auto-reconnect if bridge dropped (e.g. after a crash or non-ASCII error) ─
+    if not bridge.is_healthy():
+        logger.warning("MATLAB bridge unhealthy — attempting reconnect before execution...")
+        try:
+            bridge.start()
+            if bridge.is_healthy():
+                logger.info("MATLAB bridge reconnected successfully.")
+            else:
+                import matlab.engine as _me
+                sessions = _me.find_matlab()
+                if sessions:
+                    bridge.settings.session_name = sessions[0]
+                    bridge.start()
+                    logger.info("Reconnected to shared session: %s", sessions[0])
+        except Exception as _reconnect_err:
+            logger.warning("MATLAB reconnect failed: %s", _reconnect_err)
+        if not bridge.is_healthy():
+            return "MATLAB is offline — please reconnect the MATLAB bridge.", []
+
+    logger.info("MATLAB engine mode: simple call via shared session")
+    save_path = f"{PLOTS_DIR}/{plot_name}.png"
+    save_path_esc = save_path.replace("'", "''")
+    # Use saveas + print (more reliable headless on macOS); exportgraphics can hang
+    # waiting for display context even with DefaultFigureVisible=off.
+    # NOTE: Use ASCII-safe quotes only to prevent MATLAB parsing errors
+    # Local functions must stay at EOF — insert capture boilerplate before them only.
+    main_body, local_fns = split_matlab_script_and_local_functions(
+        code.encode("ascii", errors="replace").decode("ascii")
+    )
+    engine_footer = (
+        "\ntry\n"
+        f"  figs = get(0, 'Children');\n"
+        f"  if ~isempty(figs)\n"
+        f"    saveas(figs(1), '{save_path_esc}', 'png');\n"
+        f"    if ~exist('{save_path_esc}', 'file')\n"
+        f"      print(figs(1), '-dpng', '-r100', '{save_path_esc}');\n"
+        f"    end\n"
+        f"  end\n"
+        f"catch matclaw_err\n"
+        f"  try; print(gcf, '-dpng', '-r100', '{save_path_esc}'); catch; end;\n"
+        f"end\n"
+        f"close all;\n"
+    )
+    wrapped_code = (
+        "set(0, 'DefaultFigureVisible', 'off');\n"
+        + main_body
+        + engine_footer
+        + (("\n" + local_fns) if local_fns else "")
+    )
+    ok, stdout = _run_via_script(wrapped_code)
+    if not ok and stdout:
+        m_line = re.search(r'Line:\s*(\d+)', stdout)
+        if m_line:
+            err_line = int(m_line.group(1))
+            lines = wrapped_code.splitlines()
+            snippet_start = max(0, err_line - 3)
+            snippet = "\n".join(
+                f"{snippet_start+i+1}: {l}" for i, l in enumerate(lines[snippet_start:err_line+1])
+            )
+            logger.warning("MATLAB error at line %d. Code snippet:\n%s", err_line, snippet)
+        clean_err = re.sub(r"File /[^\n]+\.m[^\n]*\n?", "", stdout).strip()
+        clean_err = re.sub(r"File /Applications/MATLAB[^\n]*\n?", "", clean_err).strip()
+        output = f"MATLAB error: {clean_err[:300]}" if clean_err else "MATLAB execution failed."
     else:
-        # inject plot-save at the end
-        save_code = (
-            f"\ntry, exportgraphics(gcf, '{PLOTS_DIR}/{plot_name}.png', 'Resolution', 100); "
-            f"catch, try, print(gcf, '-dpng', '-r100', '{PLOTS_DIR}/{plot_name}.png'); end; end"
-        )
-        ok, stdout = _run_via_script(code + save_code)
-        if not ok and stdout:
-            # Return concise error — strip internal temp file paths from the message
-            clean_err = re.sub(r"File /[^\n]+\.m[^\n]*\n?", "", stdout).strip()
-            clean_err = re.sub(r"File /Applications/MATLAB[^\n]*\n?", "", clean_err).strip()
-            output = f"MATLAB error: {clean_err[:300]}" if clean_err else "MATLAB execution failed."
-        else:
-            output = stdout if stdout else f"MATLAB executed successfully: {req_text}"
+        output = stdout if stdout else f"MATLAB executed successfully: {req_text}"
 
-        new_plots = _save_plots_from_matlab()
-        plots.extend(new_plots)
-
+    new_plots = _save_plots_from_matlab()
+    plots.extend(new_plots)
     return output, plots
+
+
 
 
 # ── endpoints ────────────────────────────────────────────────────────────────
@@ -415,7 +1048,10 @@ async def terminal_ws(websocket: WebSocket):
     if pid == 0:
         os.environ["TERM"] = "xterm-256color"
         shell = os.environ.get("SHELL", "/bin/bash")
-        os.execv(shell, [shell])
+        try:
+            os.execv(shell, [shell])
+        except Exception:
+            os._exit(127)
     
     loop = asyncio.get_running_loop()
     
@@ -427,10 +1063,10 @@ async def terminal_ws(websocket: WebSocket):
                     break
                 await websocket.send_text(data.decode("utf-8", errors="replace"))
         except Exception as e:
-            logger.error(f"PTY read error: {e}")
+            logger.debug("PTY read ended: %s", e)
             try:
                 await websocket.close()
-            except:
+            except Exception:
                 pass
 
     async def read_from_ws():
@@ -446,9 +1082,9 @@ async def terminal_ws(websocket: WebSocket):
                     except Exception as resize_e:
                         logger.error(f"Resize error: {resize_e}")
                 else:
-                    os.write(fd, data.encode("utf-8"))
+                    await loop.run_in_executor(None, os.write, fd, data.encode("utf-8"))
         except Exception as e:
-            logger.error(f"WS read error: {e}")
+            logger.debug("WS read ended: %s", e)
 
     t1 = asyncio.create_task(read_from_pty())
     t2 = asyncio.create_task(read_from_ws())
@@ -459,12 +1095,69 @@ async def terminal_ws(websocket: WebSocket):
             t.cancel()
     try:
         os.close(fd)
-    except:
+    except Exception:
+        pass
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except Exception:
         pass
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "matlab": bridge.is_healthy()}
+async def health():
+    """
+    Liveness + MATLAB session/busy. Reads are O(1); do not use a thread pool so
+    health checks stay accurate under load (no false 'offline' from executor delay).
+
+    When MATLAB is offline or the LLM has no API key, `degraded` is true — callers
+    should route traffic away or show limited mode (graceful degradation).
+    """
+    try:
+        matlab_status = bridge.get_status_detail()
+    except Exception as exc:
+        logger.error(f"Health check failed: {exc}")
+        matlab_status = {"healthy": False, "error": str(exc)}
+
+    from src.matclaw.llm.llm_client import resolve_api_key
+
+    prov = (settings.llm.provider or "").lower().strip()
+    llm_key = resolve_api_key(settings.llm.provider, settings.llm.api_key)
+    llm_status = {
+        "provider": prov,
+        "api_key_configured": bool(llm_key),
+    }
+    matlab_ok = bool(matlab_status.get("healthy"))
+    llm_ok = llm_status["api_key_configured"]
+    degraded = (settings.matlab.enabled and not matlab_ok) or not llm_ok
+    return {
+        "status": "degraded" if degraded else "ok",
+        "degraded": degraded,
+        "matlab": matlab_status,
+        "llm": llm_status,
+        "long_term_memory_enabled": bool(getattr(settings, "long_term_memory", None) and settings.long_term_memory.enabled),
+    }
+
+
+# ── Vision Analysis Endpoint ───────────────────────────────────────────────────
+
+@app.post("/api/vision/analyze")
+async def analyze_plot_endpoint(body: dict):
+    """Run LLM-based analysis on a plot image using the existing vision analyst."""
+    plot_path: str = body.get("plot_path", "")
+    # Accept URLs like "/plots/plot_123.png" or just a filename — use basename to prevent traversal
+    basename = os.path.basename(plot_path)
+    full_path = (PLOTS_DIR / basename).resolve()
+    if not full_path.is_relative_to(PLOTS_DIR.resolve()):
+        return {"analysis": "Invalid plot path."}
+    if not full_path.exists():
+        return {"analysis": f"Plot file not found: {basename}"}
+    try:
+        from matclaw.vision.analyst import analyze_plot
+        analysis = await asyncio.to_thread(analyze_plot, str(full_path))
+        return {"analysis": analysis or "Analysis not available (no API key configured)"}
+    except Exception as exc:
+        logger.warning("Vision analysis failed: %s", exc)
+        return {"analysis": f"Analysis failed: {exc}"}
+
 
 # ── Session Persistence Endpoints ─────────────────────────────────────────────
 
@@ -539,7 +1232,7 @@ async def smart_generate(req: SmartGenRequest):
 
         # Extract agent name: first capitalized phrase or fallback to topic
         name_match = _re.search(r'\*\*([A-Z][A-Za-z ]{3,40})\*\*|^([A-Z][A-Za-z ]{3,40}):', description, _re.MULTILINE)
-        name = (name_match.group(1) or name_match.group(2)).strip() if name_match else req.topic[:60]
+        name = ((name_match.group(1) or name_match.group(2) or "").strip() if name_match else "") or req.topic[:60]
 
         # Infer allowed_tools from description
         tool_map = {
@@ -601,8 +1294,193 @@ async def optimize_prompt(req: OptimizePromptReq):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Pipeline endpoints ───────────────────────────────────────────────────────
+
+class PipelineValidateReq(BaseModel):
+    nodes: list = []
+    edges: list = []
+
+@app.get("/api/pipelines")
+def list_pipelines_endpoint():
+    return pipeline_store.list_pipelines()
+
+@app.post("/api/pipelines")
+def upsert_pipeline_endpoint(body: dict):
+    return pipeline_store.upsert_pipeline(body)
+
+@app.get("/api/pipelines/{pipeline_id}")
+def get_pipeline_endpoint(pipeline_id: str):
+    p = pipeline_store.get_pipeline(pipeline_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return p
+
+@app.delete("/api/pipelines/{pipeline_id}")
+def delete_pipeline_endpoint(pipeline_id: str):
+    if not pipeline_store.delete_pipeline(pipeline_id):
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return {"ok": True}
+
+@app.post("/api/pipelines/validate")
+def validate_pipeline_endpoint(body: dict):
+    router = TaskRouter()
+    valid, error = router.validate_pipeline(body)
+    return {"valid": valid, "error": error}
+
+@app.post("/api/pipelines/{pipeline_id}/run")
+async def run_pipeline_endpoint(pipeline_id: str):
+    pipeline = pipeline_store.get_pipeline(pipeline_id)
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    run_id = pipeline_store.create_run(pipeline_id)
+    queue: asyncio.Queue = asyncio.Queue()
+    _active_runs[run_id] = queue
+
+    async def _execute():
+        try:
+            router = TaskRouter()
+            dag, edges = pipeline_to_dag_plan(pipeline)
+            router.build_dag(dag, edges=edges)
+            try:
+                order = router.get_execution_order()
+            except ValueError as e:
+                await queue.put(_sse("pipeline_error", {"error": str(e)}))
+                await queue.put(None)
+                pipeline_store.update_run(run_id, "failed", {"error": str(e)})
+                return
+
+            await queue.put(_sse("pipeline_start", {"run_id": run_id, "total_nodes": len(order)}))
+
+            node_results: dict[str, str] = {}
+
+            for node_id in order:
+                node = router.nodes[node_id]
+                agent_def = None
+                if node.agent_id:
+                    try:
+                        agent_def = AgentRegistry().get_agent(node.agent_id)
+                    except Exception:
+                        pass
+
+                agent_system = agent_def.system_prompt if agent_def else MATCLAW_PERSONA
+                task_text = node.execution_payload.get("task", node.description)
+                node_tool = node.execution_payload.get("tool", "")
+                node_code = (node.execution_payload.get("code") or "").strip()
+
+                # Inject upstream context
+                upstream_ctx = ""
+                for inp in node.inputs:
+                    for prev_id, prev_out in node_results.items():
+                        prev_node = router.nodes.get(prev_id)
+                        if prev_node and inp in prev_node.outputs:
+                            upstream_ctx += f"\n\nOutput from upstream node '{prev_id}':\n{prev_out}"
+                if upstream_ctx:
+                    task_text = task_text + upstream_ctx
+
+                await queue.put(_sse("node_start", {"node_id": node_id, "label": node.description, "agent_id": node.agent_id or ""}))
+                router.mark_status(node_id, "running")
+
+                try:
+                    agent_result = ""
+                    node_plots: list[str] = []
+
+                    if node_tool == "run_matlab" and node_code:
+                        # Path A: direct execution
+                        exec_output, node_plots = await asyncio.to_thread(_run_matlab_and_collect, node_code, task_text)
+                        agent_result = exec_output
+                    elif node_tool == "run_matlab":
+                        # Path B: LLM generates then executes
+                        raw = await asyncio.to_thread(
+                            call_chat_completion,
+                            provider=settings.llm.provider,
+                            model=settings.llm.model,
+                            system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
+                            messages=[{"role": "user", "content": task_text}],
+                            api_key=settings.llm.api_key,
+                        )
+                        code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+                        generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
+                        if generated_code:
+                            exec_output, node_plots = await asyncio.to_thread(_run_matlab_and_collect, generated_code, task_text)
+                            agent_result = exec_output
+                        else:
+                            agent_result = raw
+                    else:
+                        # Path C: LLM text only
+                        agent_result = await asyncio.to_thread(
+                            call_chat_completion,
+                            provider=settings.llm.provider,
+                            model=settings.llm.model,
+                            system=agent_system,
+                            messages=[{"role": "user", "content": task_text}],
+                            api_key=settings.llm.api_key,
+                        )
+
+                    node_results[node_id] = agent_result
+                    router.mark_status(node_id, "completed", agent_result)
+                    await queue.put(_sse("node_complete", {
+                        "node_id": node_id,
+                        "output": agent_result[:2000],
+                        "plots": node_plots,
+                    }))
+
+                except Exception as exc:
+                    router.mark_status(node_id, "failed")
+                    await queue.put(_sse("node_failed", {"node_id": node_id, "error": str(exc)}))
+
+            await queue.put(_sse("pipeline_complete", {"run_id": run_id}))
+            pipeline_store.update_run(run_id, "completed", {"node_results": node_results})
+
+        except Exception as exc:
+            await queue.put(_sse("pipeline_error", {"error": str(exc)}))
+            pipeline_store.update_run(run_id, "failed", {"error": str(exc)})
+        finally:
+            await queue.put(None)  # sentinel
+            _active_runs.pop(run_id, None)
+
+    asyncio.create_task(_execute())
+    return {"run_id": run_id}
+
+@app.get("/api/pipelines/runs/{run_id}/stream")
+async def stream_pipeline_run(run_id: str):
+    queue = _active_runs.get(run_id)
+    if not queue:
+        run = pipeline_store.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        # Already finished — return status as a single SSE event
+        async def _done():
+            yield _sse("pipeline_complete", {"run_id": run_id, "status": run["status"]})
+        return StreamingResponse(_done(), media_type="text/event-stream")
+
+    async def _stream():
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+@app.delete("/api/pipelines/runs/{run_id}")
+async def cancel_pipeline_run(run_id: str):
+    queue = _active_runs.get(run_id)
+    if queue:
+        await queue.put(_sse("pipeline_error", {"error": "Cancelled by user"}))
+        await queue.put(None)
+    pipeline_store.update_run(run_id, "cancelled")
+    return {"ok": True}
+
+@app.get("/api/pipelines/{pipeline_id}/runs")
+def list_pipeline_runs(pipeline_id: str):
+    return pipeline_store.list_runs_for_pipeline(pipeline_id)
+
+
 # ── Model Manager ────────────────────────────────────────────────────────────
 MODELS_FILE = ROOT / ".matclaw_models.json"
+import threading as _threading
+_models_lock = _threading.Lock()
 
 class ModelConfig(BaseModel):
     id: str = ""
@@ -614,12 +1492,21 @@ class ModelConfig(BaseModel):
     active: bool = False
 
 def _load_models() -> list[dict]:
-    if MODELS_FILE.exists():
-        return json.loads(MODELS_FILE.read_text())
-    return []
+    with _models_lock:
+        if MODELS_FILE.exists():
+            try:
+                return json.loads(MODELS_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                return []
+        return []
 
 def _save_models(models: list[dict]):
-    MODELS_FILE.write_text(json.dumps(models, indent=2))
+    import tempfile
+    with _models_lock:
+        data = json.dumps(models, indent=2)
+        tmp = MODELS_FILE.with_suffix(".tmp")
+        tmp.write_text(data)
+        tmp.replace(MODELS_FILE)
 
 @app.get("/api/settings/models")
 def list_models():
@@ -749,8 +1636,9 @@ async def run_nl(req: RunRequest):
 
     try:
         # ── Phase 1: LLM decides action + generates conversational reply ──
-        raw_resp = _llm_chat(
-            req.text,
+        raw_resp = await asyncio.to_thread(
+            _llm_chat,
+            req.effective_text,
             system=MATCLAW_PERSONA,
             history=req.history[-10:] if req.history else None,
             max_tokens=8192,
@@ -764,7 +1652,7 @@ async def run_nl(req: RunRequest):
         # ── Fallback: if LLM didn't return valid JSON, use keyword router ──
         if not plan or not reply:
             logger.info("LLM routing failed, falling back to keyword router")
-            fallback_skill, _ = route_nl_message(req.text)
+            fallback_skill, _ = route_nl_message(req.effective_text)
             if fallback_skill in ("run_matlab",):
                 action = "run_matlab"
                 reply = ""
@@ -788,16 +1676,18 @@ async def run_nl(req: RunRequest):
 
             # Fallback to curated demo library
             if not code:
-                code = find_demo(req.text) or ""
+                code = find_demo(req.effective_text) or ""
 
             # Guard against hallucinated functions
             if code:
                 bad = [r"\bLLM\b", r"\bAI\s*\(", r"\bMatClaw\s*\(", r"\bClaude\s*\("]
                 if any(re.search(p, code, re.IGNORECASE) for p in bad):
-                    code = find_demo(req.text) or ""
+                    code = find_demo(req.effective_text) or ""
 
             if code:
-                exec_output, plots = _run_matlab_and_collect(code, req.text)
+                exec_output, plots = await asyncio.to_thread(
+                    _run_matlab_and_collect, code, req.effective_text
+                )
                 # Blend conversational reply with execution result
                 if reply and exec_output and not exec_output.startswith("MATLAB error"):
                     output = reply
@@ -819,9 +1709,13 @@ async def run_nl(req: RunRequest):
                 proj_dir.mkdir(parents=True, exist_ok=True)
 
                 for f in proj_files:
-                    fname = f.get("filename", "untitled.m")
+                    fname = os.path.basename(f.get("filename", "untitled.m"))
                     content = f.get("content", "")
-                    (proj_dir / fname).write_text(content, encoding="utf-8")
+                    safe_path = (proj_dir / fname).resolve()
+                    if not safe_path.is_relative_to(proj_dir.resolve()):
+                        logger.warning("Skipping file with path traversal: %s", fname)
+                        continue
+                    safe_path.write_text(content, encoding="utf-8")
                     files.append({
                         "path": f"{proj_name}/{fname}",
                         "filename": fname,
@@ -838,7 +1732,7 @@ async def run_nl(req: RunRequest):
             # Gather memory data
             mem_lines: list[str] = []
             try:
-                semantic = memory.query_context(req.text, n_results=5)
+                semantic = memory.query_context(req.effective_text, n_results=5)
                 for r in semantic:
                     meta = r.get("metadata", {})
                     req_text = meta.get("request", r.get("document", ""))
@@ -954,13 +1848,161 @@ async def run_nl_stream(req: RunRequest):
             except Exception as _e:
                 logger.debug("state_tracker update failed: %s", _e)
 
+        # ── force_runtime shortcut (bypasses LLM routing) ─────────────────
+        if req.force_runtime:
+            rt_name = req.force_runtime
+            code = req.effective_text
+            yield _sse("tool_start", {"action": f"run_{rt_name}", "label": f"Running {rt_name}..."})
+            try:
+                result = await asyncio.to_thread(
+                    _runtime_registry.execute, rt_name, code, {"task": code[:120]}
+                )
+                if result.success:
+                    yield _sse("tool_result", {"output": result.output, "plots": result.plots, "files": []})
+                    yield _sse("done", {"skill": f"run_{rt_name}", "elapsed_ms": result.elapsed_ms or 0, "reply": result.output, "plots": result.plots, "files": []})
+                else:
+                    yield _sse("tool_result", {"output": result.error, "plots": [], "files": []})
+                    yield _sse("done", {"skill": f"run_{rt_name}", "elapsed_ms": 0, "reply": result.error, "plots": [], "files": []})
+            except Exception as _rt_exc:
+                yield _sse("error", {"message": str(_rt_exc)})
+                yield _sse("done", {"skill": f"run_{rt_name}", "elapsed_ms": 0, "reply": str(_rt_exc), "plots": [], "files": []})
+            return
+
+        # ── Agentic mode: iterative tool-use loop ─────────────────────────────
+        if req.mode == "agentic":
+            async def _agentic_runtime_dispatch(tool_name: str, inputs: dict):
+                """Dispatcher used by the agentic loop to run tools and runtimes."""
+                # Virtual runtime tools
+                if tool_name == "run_matlab":
+                    code = inputs.get("code", "")
+                    output, plots = await asyncio.to_thread(
+                        _run_matlab_and_collect, code, req.effective_text
+                    )
+                    # Run CodeDoctor on agentic MATLAB results too
+                    if req.doctor_mode:
+                        doctor_events_ag: list[tuple[str, dict]] = []
+                        def _on_ag_event(ev: str, d: dict) -> None:
+                            doctor_events_ag.append((ev, d))
+                        code, output, plots, _ = await asyncio.to_thread(
+                            run_code_doctor,
+                            code, output, plots,
+                            req.effective_text, str(PLOTS_DIR),
+                            lambda c, t: _run_matlab_and_collect(c, t),
+                            _llm_chat, _on_ag_event,
+                        )
+                        # Emit doctor events into the SSE stream
+                        # (they will be yielded by the agentic loop's caller)
+                        for _ev, _d in doctor_events_ag:
+                            pass   # agentic loop doesn't have a yield here;
+                                   # events are stored and can be forwarded via agent_result
+                    return output, plots
+                if tool_name in ("run_python", "run_shell"):
+                    rt = "python" if tool_name == "run_python" else "shell"
+                    code = inputs.get("code") or inputs.get("command", "")
+                    result = await asyncio.to_thread(
+                        _runtime_registry.execute, rt, code, {"task": req.effective_text[:120]}
+                    )
+                    out = result.output if result.success else result.error
+                    return out, getattr(result, "plots", [])
+                # Pluggable tools (web_fetch, file_ops, …)
+                plugin = tool_registry.get(tool_name)
+                if plugin:
+                    from matclaw.tools.base import ToolContext
+                    ctx = ToolContext(tenant_id="default", request_id=req.session_id)
+                    tr = await plugin.run(inputs, ctx)
+                    out_str = str(tr.output) if tr.success else tr.error
+                    plots = getattr(tr, "artifacts", [])
+                    return out_str, plots
+                return f"Unknown tool: {tool_name}", []
+
+            memory_preamble = ""
+            prod = getattr(settings, "production", None)
+            if (
+                settings.long_term_memory.enabled
+                and prod
+                and getattr(prod, "memory_inject_enabled", True)
+            ):
+                try:
+                    n_res = int(getattr(prod, "memory_n_results", 5))
+                    max_ch = int(getattr(prod, "memory_max_chars", 4000))
+                    hits = memory.query_context(req.effective_text, n_results=max(1, min(20, n_res)))
+                    lines: list[str] = []
+                    for h in hits:
+                        doc = (h.get("document") or "").strip()
+                        if doc:
+                            lines.append(doc[:1200])
+                    blob = "\n\n".join(lines)
+                    if blob.strip():
+                        memory_preamble = (
+                            "Relevant prior context from long-term memory "
+                            "(past tasks, preferences, or lessons — verify before relying on it):\n"
+                            + blob[:max_ch]
+                        )
+                except Exception as _mem_q:
+                    logger.debug("Memory preamble skipped: %s", _mem_q)
+
+            # Wrap agentic loop with a keepalive ping every 20s
+            # so the browser SSE connection doesn't drop during long MATLAB runs.
+            async with _agentic_slot_semaphore:
+                agentic_gen = run_agentic_loop(
+                    user_text=req.effective_text,
+                    history=req.history,
+                    settings=settings,
+                    tool_registry=tool_registry,
+                    runtime_dispatcher=_agentic_runtime_dispatch,
+                    memory_preamble=memory_preamble or None,
+                    session_id=req.session_id,
+                    memory_manager=memory,
+                )
+                last_ping = time.time()
+                agentic_done = False
+                async for event in agentic_gen:
+                    yield event
+                    if 'event: done' in event:
+                        agentic_done = True
+                    if time.time() - last_ping > 20:
+                        yield ": keepalive\n\n"
+                        last_ping = time.time()
+            if not agentic_done:
+                elapsed = int((time.time() - t0) * 1000)
+                prod = getattr(settings, "production", None)
+                budget_ms = int((getattr(prod, "max_agentic_wall_seconds", 600.0) * 1000)) if prod else 600_000
+                cost_cap_fb = float(getattr(prod, "soft_cost_cap_usd_per_task", 0.0) or 0.0) if prod else 0.0
+                yield _sse("done", {
+                    "skill": "agentic",
+                    "elapsed_ms": elapsed,
+                    "reply": "",
+                    "plots": [],
+                    "files": [],
+                    "execution": {
+                        "run_success": False,
+                        "spec_satisfied": False,
+                        "violations": ["Stream ended before final agentic done event."],
+                        "notes": [],
+                    },
+                    "budget": {
+                        "wall_clock_ms": elapsed,
+                        "wall_clock_budget_ms": budget_ms,
+                        "within_wall_budget": elapsed <= budget_ms,
+                        "wall_abort": False,
+                        "soft_cost_cap_usd": cost_cap_fb,
+                        "cost_abort": False,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "estimated_cost_usd": 0.0,
+                        "within_soft_cost_cap": True,
+                    },
+                })
+            return
+
         try:
             # ── Phase 0: Mark as RESEARCHING ────────────────────────────
             await asyncio.to_thread(_log_episode, "researching", {"user_text": req.text, "session_id": req.session_id})
             await asyncio.to_thread(_set_state, ExecutionState.RESEARCHING, {"text": req.text})
 
             sys_arg, messages = _build_messages(
-                req.text, MATCLAW_PERSONA,
+                req.effective_text, MATCLAW_PERSONA,
                 req.history[-10:] if req.history else None,
             )
 
@@ -1019,17 +2061,44 @@ async def run_nl_stream(req: RunRequest):
                 yield _sse("text", {"token": reply})
             action = plan.get("action", "none")
 
+            # Override: if LLM chose "none" but NL router strongly signals an execution,
+            # promote the action so the user gets a result (not just a chat response).
+            if action == "none" and plan:
+                _nl_signal, _ = route_nl_message(req.effective_text)
+                if _nl_signal in ("run_matlab", "run_python", "run_shell"):
+                    action = _nl_signal
+                    plan.setdefault("code", None)
+
             # Fallback to keyword router if JSON parsing failed
             if not plan or not reply:
-                fallback_skill, _ = route_nl_message(req.text)
+                fallback_skill, _ = route_nl_message(req.effective_text)
                 if fallback_skill in ("run_matlab",):
                     action = "run_matlab"
+                    plan.setdefault("code", None)
+
+                elif fallback_skill == "run_python":
+                    action = "run_python"
+                    plan["code"] = None
+                elif fallback_skill == "run_shell":
+                    action = "run_shell"
                     plan["code"] = None
                 elif fallback_skill == "query_memory":
                     action = "query_memory"
                 else:
                     action = "none"
-                    reply = raw if raw else "I'm not sure how to help with that."
+                    # Safety: if raw looks like JSON, try extracting "reply" field
+                    # rather than dumping the entire JSON string as the chat reply
+                    _fallback_raw = raw if raw else "I'm not sure how to help with that."
+                    if _fallback_raw.strip().startswith('{'):
+                        try:
+                            _fb = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", _fallback_raw.strip()))
+                            reply = _fb.get("reply") or _fallback_raw
+                        except Exception:
+                            reply = _fallback_raw
+                    else:
+                        reply = _fallback_raw
+                    if not reply:
+                        reply = "I'm not sure how to help with that."
 
             skill_name = action if action != "none" else "chat"
             plots: list[str] = []
@@ -1065,8 +2134,10 @@ async def run_nl_stream(req: RunRequest):
             if action == "run_matlab":
                 code = plan.get("code") or ""
                 code = re.sub(r"```(?:matlab)?\s*|\s*```", "", code).strip()
+                if code:
+                    code = _sanitize_matlab_code(code)
                 if not code:
-                    code = find_demo(req.text) or ""
+                    code = find_demo(req.effective_text) or ""
 
                 if code:
                     # ── StaticAnalyzer pre-check ──────────────────────────
@@ -1085,14 +2156,128 @@ async def run_nl_stream(req: RunRequest):
                     await asyncio.to_thread(_set_state, ExecutionState.IMPLEMENTING, {})
 
                     yield _sse("tool_start", {"action": "run_matlab", "label": "Running MATLAB code..."})
-                    exec_output, plots = await asyncio.to_thread(
-                        _run_matlab_and_collect, code, req.text
+                    _mat_task = asyncio.create_task(
+                        asyncio.to_thread(_run_matlab_and_collect, code, req.effective_text)
                     )
+                    while not _mat_task.done():
+                        _done, _ = await asyncio.wait([_mat_task], timeout=12.0)
+                        if _mat_task in _done:
+                            break
+                        yield ": keepalive\n\n"
+                    exec_output, plots = await _mat_task
                     yield _sse("tool_result", {
                         "output": exec_output,
                         "plots": plots,
                         "files": [],
+                        "code": code,
                     })
+
+                    # ── CodeDoctor: autonomous debug loop ─────────────────
+                    if req.doctor_mode:
+                        doctor_events: list[tuple[str, dict]] = []
+
+                        def _on_doctor_event(event: str, data: dict) -> None:
+                            doctor_events.append((event, data))
+
+                        def _doctor_executor(fixed_code: str, task: str) -> tuple[str, list[str]]:
+                            return _run_matlab_and_collect(fixed_code, task)
+
+                        _doc_task = asyncio.create_task(
+                            asyncio.to_thread(
+                                run_code_doctor,
+                                code, exec_output, plots,
+                                req.effective_text,
+                                str(PLOTS_DIR),
+                                _doctor_executor,
+                                _llm_chat,
+                                _on_doctor_event,
+                            )
+                        )
+                        while not _doc_task.done():
+                            _d2, _ = await asyncio.wait([_doc_task], timeout=12.0)
+                            if _doc_task in _d2:
+                                break
+                            yield ": keepalive\n\n"
+                        code, exec_output, plots, _rounds = await _doc_task
+
+                        # Flush collected doctor events as SSE
+                        for ev_name, ev_data in doctor_events:
+                            yield _sse(ev_name, ev_data)
+
+                        # If doctor changed the code/plots, emit updated tool_result
+                        if _rounds:
+                            yield _sse("tool_result", {
+                                "output": exec_output,
+                                "plots": plots,
+                                "files": [],
+                                "code": code,
+                            })
+
+                    # ── Sentry Mode: quality check + auto-retry ───────────
+                    if req.sentry_mode and plots:
+                        yield _sse("sentry_start", {"message": "Checking result quality..."})
+                        retried = False
+                        for attempt in range(1, 3):  # max 2 retries
+                            plot_fs_path = str(PLOTS_DIR / plots[0].lstrip("/").replace("plots/", ""))
+                            quality = _check_plot_quality(plot_fs_path, exec_output)
+                            if quality["status"] == "good":
+                                yield _sse("sentry_done", {
+                                    "quality": "good",
+                                    "message": "✓ Result verified",
+                                })
+                                retried = True
+                                break
+                            yield _sse("sentry_issue", {
+                                "attempt": attempt,
+                                "max_attempts": 2,
+                                "issues": quality["issues"],
+                                "message": f"Attempt {attempt}: {'; '.join(quality['issues'])}. Retrying...",
+                            })
+                            fixed_code = await asyncio.to_thread(
+                                _sentry_retry_code, req.effective_text, code, quality["issues"]
+                            )
+                            if not fixed_code:
+                                break
+                            # Extract code block if LLM wrapped it in markdown
+                            fixed_code = re.sub(r"```(?:matlab)?\s*|\s*```", "", fixed_code).strip()
+                            code = fixed_code
+                            yield _sse("tool_start", {
+                                "action": "run_matlab",
+                                "label": f"Sentry retry {attempt}/2...",
+                            })
+                            exec_output, plots = await asyncio.to_thread(
+                                _run_matlab_and_collect, code, req.effective_text
+                            )
+                            yield _sse("tool_result", {
+                                "output": exec_output,
+                                "plots": plots,
+                                "files": [],
+                                "code": code,
+                            })
+                        if not retried:
+                            yield _sse("sentry_done", {
+                                "quality": "poor",
+                                "message": "Max retries reached — result may need manual review",
+                            })
+
+            elif action in ("run_python", "run_shell"):
+                rt_name = "python" if action == "run_python" else "shell"
+                code = plan.get("code") or ""
+                code = re.sub(r"```(?:python|bash|sh|shell)?\s*|\s*```", "", code).strip()
+                if code:
+                    await asyncio.to_thread(_log_episode, "implementing", {"runtime": rt_name, "code_len": len(code)})
+                    await asyncio.to_thread(_set_state, ExecutionState.IMPLEMENTING, {})
+                    yield _sse("tool_start", {"action": action, "label": f"Running {rt_name}..."})
+                    result = await asyncio.to_thread(
+                        _runtime_registry.execute, rt_name, code, {"task": req.effective_text[:120]}
+                    )
+                    exec_output = result.output if result.success else result.error
+                    yield _sse("tool_result", {
+                        "output": exec_output,
+                        "plots": result.plots,
+                        "files": [],
+                    })
+                    plots.extend(result.plots)
 
             elif action == "project_gen":
                 skill_name = "project_gen"
@@ -1106,9 +2291,13 @@ async def run_nl_stream(req: RunRequest):
                     proj_dir.mkdir(parents=True, exist_ok=True)
 
                     for f in proj_files:
-                        fname = f.get("filename", "untitled.m")
+                        fname = os.path.basename(f.get("filename", "untitled.m"))
                         content = f.get("content", "")
-                        (proj_dir / fname).write_text(content, encoding="utf-8")
+                        safe_path = (proj_dir / fname).resolve()
+                        if not safe_path.is_relative_to(proj_dir.resolve()):
+                            logger.warning("Skipping file with path traversal: %s", fname)
+                            continue
+                        safe_path.write_text(content, encoding="utf-8")
                         files.append({
                             "path": f"{proj_name}/{fname}",
                             "filename": fname,
@@ -1253,7 +2442,7 @@ async def run_nl_stream(req: RunRequest):
                 yield _sse("tool_start", {"action": "query_memory", "label": "Searching memory..."})
                 mem_lines: list[str] = []
                 try:
-                    semantic = memory.query_context(req.text, n_results=5)
+                    semantic = memory.query_context(req.effective_text, n_results=5)
                     for r in semantic:
                         meta = r.get("metadata", {})
                         req_text = meta.get("request", r.get("document", ""))
@@ -1291,6 +2480,7 @@ async def run_nl_stream(req: RunRequest):
             except Exception:
                 pass
             yield _sse("error", {"message": str(exc)})
+            yield _sse("done", {"skill": "error", "elapsed_ms": int((time.time() - t0) * 1000), "reply": str(exc), "plots": [], "files": []})
 
     return StreamingResponse(
         event_generator(),
@@ -1300,6 +2490,181 @@ async def run_nl_stream(req: RunRequest):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ── Enterprise: Metrics ──────────────────────────────────────────────────────
+
+@app.get("/metrics")
+def get_metrics():
+    """Prometheus-style metrics snapshot + production SLO hints (read-only)."""
+    snap = _metrics.snapshot()
+    prod = getattr(settings, "production", None)
+    snap["production"] = {
+        "max_agentic_wall_seconds": getattr(prod, "max_agentic_wall_seconds", None) if prod else None,
+        "agentic_max_concurrent": getattr(prod, "agentic_max_concurrent", None) if prod else None,
+        "soft_cost_cap_usd_per_task": getattr(prod, "soft_cost_cap_usd_per_task", None) if prod else None,
+        "memory_inject_enabled": getattr(prod, "memory_inject_enabled", None) if prod else None,
+    }
+    return snap
+
+
+@app.get("/api/daemon/status")
+def daemon_status():
+    """Daemon heartbeat status."""
+    return _heartbeat.status()
+
+
+# ── Enterprise: Runtimes ──────────────────────────────────────────────────────
+
+@app.get("/api/runtimes")
+def list_runtimes():
+    """List all registered execution runtimes and their availability."""
+    return _runtime_registry.list_runtimes()
+
+
+@app.post("/api/runtimes/{runtime_name}/execute")
+async def execute_runtime(runtime_name: str, body: dict):
+    """Directly execute code on a named runtime. Body: {code: str}"""
+    code = body.get("code", "")
+    if not code:
+        raise HTTPException(status_code=400, detail="code is required")
+    result = await asyncio.to_thread(
+        _runtime_registry.execute, runtime_name, code, {"task": code[:120]}
+    )
+    return {
+        "success": result.success,
+        "output": result.output,
+        "plots": result.plots,
+        "elapsed_ms": result.elapsed_ms,
+        "error": result.error,
+    }
+
+
+# ── Enterprise: Tools ─────────────────────────────────────────────────────────
+
+@app.get("/api/tools")
+def list_tools():
+    """List all registered tools with their manifests."""
+    return [t.model_dump() for t in tool_registry.list_tools()]
+
+
+@app.post("/api/tools/{tool_name}/run")
+async def run_tool(tool_name: str, inputs: dict):
+    """Execute a registered tool by name."""
+    from src.matclaw.tools.base import ToolContext
+    tool = tool_registry.get(tool_name)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    result = await tool.run(inputs, ToolContext())
+    return {"success": result.success, "output": result.output,
+            "error": result.error, "artifacts": result.artifacts}
+
+
+# ── Enterprise: Scheduler ─────────────────────────────────────────────────────
+
+@app.get("/api/scheduler/tasks")
+def list_scheduled_tasks():
+    return [t.model_dump() for t in _scheduler.list_tasks()]
+
+
+@app.post("/api/scheduler/tasks")
+def create_scheduled_task(body: dict):
+    import time as _t
+    task = ScheduledTask(
+        id=str(uuid.uuid4())[:8],
+        name=body.get("name", "unnamed"),
+        cron_expression=body.get("cron_expression", "@hourly"),
+        runtime=body.get("runtime", "shell"),
+        command=body.get("command", ""),
+        enabled=body.get("enabled", True),
+        tenant_id=body.get("tenant_id", "default"),
+        created_at=int(_t.time()),
+    )
+    return _scheduler.add_task(task).model_dump()
+
+
+@app.delete("/api/scheduler/tasks/{task_id}")
+def delete_scheduled_task(task_id: str):
+    if not _scheduler.remove_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"ok": True}
+
+
+# ── Enterprise: Auth / API Keys ───────────────────────────────────────────────
+
+class CreateKeyRequest(BaseModel):
+    label: str
+    role: str = "developer"
+    tenant_id: str = "default"
+    rate_limit_rpm: int = 60
+
+
+@app.post("/api/auth/keys")
+def create_api_key(req: CreateKeyRequest):
+    from src.matclaw.api.auth import Role
+    raw_key, ak = _key_store.create_key(
+        label=req.label,
+        role=req.role,  # type: ignore[arg-type]
+        tenant_id=req.tenant_id,
+        rate_limit_rpm=req.rate_limit_rpm,
+    )
+    return {"raw_key": raw_key, **ak.safe_dict()}
+
+
+@app.get("/api/auth/keys")
+def list_api_keys():
+    return [k.safe_dict() for k in _key_store.list_keys()]
+
+
+@app.delete("/api/auth/keys/{key_id}")
+def revoke_api_key(key_id: str):
+    if not _key_store.revoke_key(key_id):
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"ok": True}
+
+
+@app.get("/api/audit")
+def get_audit_log(limit: int = 100):
+    return _key_store.get_audit_log(limit=limit)
+
+
+# ── Enterprise: Gateway Webhook ───────────────────────────────────────────────
+
+@app.post("/api/gateway/webhook")
+async def webhook_gateway(req: WebhookRequest):
+    """
+    Generic inbound webhook — routes any text message through the MatClaw NL pipeline.
+    Slack slash commands, Discord webhooks, n8n, Zapier can all POST here.
+    """
+    request_id = str(uuid.uuid4())
+    output = ""
+    plots: list[str] = []
+
+    t0 = time.time()
+    try:
+        skill, _ = route_nl_message(req.text)
+        if skill in ("run_matlab",):
+            result = await asyncio.to_thread(
+                _runtime_registry.execute, "matlab", req.text, {"task": req.text}
+            )
+            output = result.output
+            plots = getattr(result, "plots", [])
+        else:
+            raw = await asyncio.to_thread(
+                _llm_chat, req.text, MATCLAW_PERSONA, None, 2048
+            )
+            plan = _parse_llm_response(raw)
+            output = plan.get("reply") or raw[:500]
+    except Exception as exc:
+        output = f"Error: {exc}"
+
+    return WebhookResponse(
+        text=output,
+        channel=req.channel,
+        chat_id=req.chat_id,
+        plots=plots,
+        request_id=request_id,
     )
 
 

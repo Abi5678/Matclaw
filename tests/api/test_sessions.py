@@ -97,11 +97,16 @@ def app(tmp_path_factory):
     ):
         from src.matclaw.api.server import app as _app, session_store as _store
         # Inject a real store backed by tmp db
+        import threading
         real_store = SessionStore.__new__(SessionStore)
         real_store.db_path = str(db)
+        real_store._lock = threading.Lock()
         import sqlite3, src.matclaw.memory.session_store as _mod
-        with sqlite3.connect(str(db)) as conn:
-            conn.execute(_mod._CREATE_TABLE)
+        conn = sqlite3.connect(str(db))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(_mod._CREATE_TABLE)
+        conn.commit()
+        conn.close()
         import src.matclaw.api.server as srv
         srv.session_store = real_store
         yield _app

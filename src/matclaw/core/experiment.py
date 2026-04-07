@@ -133,18 +133,20 @@ class ExperimentTracker:
         return rec
 
     def log_metric(self, experiment_id: str, key: str, value: Any) -> None:
-        rec = self.get_experiment(experiment_id)
-        if rec is None:
-            return
-        rec.metrics[key] = value
-        self._update_record(rec)
+        with self._lock:
+            rec = self._get_experiment_unlocked(experiment_id)
+            if rec is None:
+                return
+            rec.metrics[key] = value
+            self._update_record_unlocked(rec)
 
     def log_artifact(self, experiment_id: str, path: str, artifact_type: str | None = None) -> None:
-        rec = self.get_experiment(experiment_id)
-        if rec is None:
-            return
-        rec.artifacts.append(path if artifact_type is None else f"{artifact_type}:{path}")
-        self._update_record(rec)
+        with self._lock:
+            rec = self._get_experiment_unlocked(experiment_id)
+            if rec is None:
+                return
+            rec.artifacts.append(path if artifact_type is None else f"{artifact_type}:{path}")
+            self._update_record_unlocked(rec)
 
     def finish_experiment(
         self,
@@ -154,16 +156,17 @@ class ExperimentTracker:
         error: str | None = None,
         metrics: dict[str, Any] | None = None,
     ) -> None:
-        rec = self.get_experiment(experiment_id)
-        if rec is None:
-            return
-        rec.completed_at = _utc_now()
-        rec.duration_seconds = max(0.0, (rec.completed_at - rec.started_at).total_seconds())
-        rec.status = status
-        rec.error = error
-        if metrics:
-            rec.metrics.update(metrics)
-        self._update_record(rec)
+        with self._lock:
+            rec = self._get_experiment_unlocked(experiment_id)
+            if rec is None:
+                return
+            rec.completed_at = _utc_now()
+            rec.duration_seconds = max(0.0, (rec.completed_at - rec.started_at).total_seconds())
+            rec.status = status
+            rec.error = error
+            if metrics:
+                rec.metrics.update(metrics)
+            self._update_record_unlocked(rec)
 
     def get_experiment(self, experiment_id: str) -> ExperimentRecord | None:
         with self._lock, self._connect() as conn:
@@ -342,6 +345,50 @@ class ExperimentTracker:
         if not row:
             return None
         return dict(row)
+
+    def _get_experiment_unlocked(self, experiment_id: str) -> ExperimentRecord | None:
+        """Get experiment without acquiring lock (caller must hold self._lock)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        return self._row_to_record(row) if row else None
+
+    def _update_record_unlocked(self, rec: ExperimentRecord) -> None:
+        """Update record without acquiring lock (caller must hold self._lock)."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE experiments
+                SET
+                    params_json = ?,
+                    metrics_json = ?,
+                    artifacts_json = ?,
+                    started_at = ?,
+                    completed_at = ?,
+                    duration_seconds = ?,
+                    status = ?,
+                    error = ?,
+                    parent_id = ?,
+                    tags_json = ?
+                WHERE experiment_id = ?
+                """,
+                (
+                    json.dumps(rec.params),
+                    json.dumps(rec.metrics),
+                    json.dumps(rec.artifacts),
+                    rec.started_at.isoformat(),
+                    rec.completed_at.isoformat() if rec.completed_at else None,
+                    rec.duration_seconds,
+                    rec.status,
+                    rec.error,
+                    rec.parent_id,
+                    json.dumps(rec.tags),
+                    rec.experiment_id,
+                ),
+            )
+            conn.commit()
 
     def _update_record(self, rec: ExperimentRecord) -> None:
         with self._lock, self._connect() as conn:

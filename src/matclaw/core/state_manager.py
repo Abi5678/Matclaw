@@ -1,8 +1,11 @@
 import logging
 import json
+import threading
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 class ExecutionState(str, Enum):
     IDLE = "IDLE"
@@ -23,23 +26,31 @@ class AsyncStateTracker:
     """
     def __init__(self, state_file: str = ".matclaw_async_state.json"):
         self.state_file = Path(state_file)
+        self._lock = threading.Lock()
         self.state_cache: Dict[str, Any] = {}
         
         if self.state_file.exists():
             try:
-                self.state_cache = json.loads(self.state_file.read_text())
-            except Exception:
-                pass
+                raw = self.state_file.read_text().strip()
+                if raw:
+                    self.state_cache = json.loads(raw)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Corrupted state file %s, resetting: %s", self.state_file, e)
+                self.state_cache = {}
 
     def save_task_state(self, task_id: str, state: ExecutionState, payload: Dict[str, Any]) -> None:
-        self.state_cache[task_id] = {
-            "status": state.value,
-            "payload": payload
-        }
-        self.state_file.write_text(json.dumps(self.state_cache, indent=2))
+        with self._lock:
+            self.state_cache[task_id] = {
+                "status": state.value,
+                "payload": payload
+            }
+            tmp = self.state_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.state_cache, indent=2))
+            tmp.replace(self.state_file)
 
     def load_task_state(self, task_id: str) -> Optional[Dict[str, Any]]:
-        return self.state_cache.get(task_id)
+        with self._lock:
+            return self.state_cache.get(task_id)
 
     def is_task_suspended(self, task_id: str) -> bool:
         state = self.load_task_state(task_id)
