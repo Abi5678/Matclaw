@@ -20,17 +20,17 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
-from src.matclaw.config.base_config import MatClawSettings
-from src.matclaw.config.logging_config import configure_logging
-from src.matclaw.core.experiment import ExperimentTracker
-from src.matclaw.core.rpi_executor import RPIExecutor
-from src.matclaw.lab_journal import append_lab_journal
-from src.matclaw.matlab.matlab_bridge import MatlabBridge
-from src.matclaw.memory.consolidator import ConsolidationEngine
-from src.matclaw.memory.knowledge_base import KnowledgeBase
-from src.matclaw.memory.memory import MemoryStore
-from src.matclaw.memory.memory_manager import MemoryManager
-from src.matclaw.skills import get_skill_instructions, list_skills, load_skill_logic
+from matclaw.config.base_config import MatClawSettings
+from matclaw.config.logging_config import configure_logging
+from matclaw.core.experiment import ExperimentTracker
+from matclaw.core.rpi_executor import RPIExecutor
+from matclaw.lab_journal import append_lab_journal
+from matclaw.matlab.matlab_bridge import MatlabBridge
+from matclaw.memory.consolidator import ConsolidationEngine
+from matclaw.memory.knowledge_base import KnowledgeBase
+from matclaw.memory.memory import MemoryStore
+from matclaw.memory.memory_manager import MemoryManager
+from matclaw.skills import get_skill_instructions, list_skills, load_skill_logic
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +470,7 @@ def get_experiment_trend(
 def read_matlab_file(file_path: str, ctx: Context[ServerSession, MatClawContext]) -> str:
     """Read a MATLAB .m file from the workspace and return its contents.
     Use this to inspect code before deciding to fix or run it."""
-    from src.matclaw.security.file_access import guard_file_access
+    from matclaw.security.file_access import guard_file_access
 
     decision = guard_file_access(file_path)
     if not decision.allow:
@@ -493,8 +493,8 @@ def analyze_fix_run(
     "run" (just execute), "fix_and_run" (full pipeline).
     Example: analyze_fix_run("test.m", action="fix_and_run")
     """
-    from src.matclaw.debug.debug_agent import DebugAgent
-    from src.matclaw.security.file_access import guard_file_access
+    from matclaw.debug.debug_agent import DebugAgent
+    from matclaw.security.file_access import guard_file_access
 
     app_ctx = _get_app_ctx(ctx)
     decision = guard_file_access(file_path)

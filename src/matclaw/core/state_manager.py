@@ -1,3 +1,4 @@
+import copy
 import logging
 import json
 import threading
@@ -50,7 +51,8 @@ class AsyncStateTracker:
 
     def load_task_state(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
-            return self.state_cache.get(task_id)
+            val = self.state_cache.get(task_id)
+            return copy.deepcopy(val) if val is not None else None
 
     def is_task_suspended(self, task_id: str) -> bool:
         state = self.load_task_state(task_id)

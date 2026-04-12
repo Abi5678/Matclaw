@@ -2,8 +2,8 @@ import logging
 from typing import Any, Dict
 
 from pydantic import BaseModel
-from src.matclaw.matlab.matlab_bridge import MatlabBridge
-from src.matclaw.core.static_analyzer import StaticAnalyzer
+from matclaw.matlab.matlab_bridge import MatlabBridge
+from matclaw.core.static_analyzer import StaticAnalyzer
 
 logger = logging.getLogger(__name__)
 

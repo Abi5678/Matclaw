@@ -9,8 +9,8 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.matclaw.core.scheduler import Scheduler
-    from src.matclaw.core.job_manager import JobManager
+    from matclaw.core.scheduler import Scheduler
+    from matclaw.core.job_manager import JobManager
 
 logger = logging.getLogger(__name__)
 

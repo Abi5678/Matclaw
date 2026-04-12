@@ -2,7 +2,7 @@ import logging
 import uuid
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from src.matclaw.agents.registry import AgentRegistry
+from matclaw.agents.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -159,13 +159,14 @@ def pipeline_to_dag_plan(pipeline: dict) -> tuple["DAGPlan", list[dict]]:
             TaskNode(
                 id=node_id,
                 description=cfg.get("task_description", n.get("label", node_id)),
-                inputs=[e.get("source_handle", "data") for e in edges if e.get("target") == node_id],
+                inputs=[e.get("target_handle", "data") for e in edges if e.get("target") == node_id],
                 outputs=[e.get("source_handle", "data") for e in edges if e.get("source") == node_id],
                 agent_id=n.get("agent_id"),
                 execution_payload={
                     "tool": cfg.get("tool", ""),
                     "code": cfg.get("code", ""),
                     "task": cfg.get("task_description", n.get("label", "")),
+                    "timeout_seconds": cfg.get("timeout_seconds"),
                 },
             )
         )

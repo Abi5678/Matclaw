@@ -17,17 +17,17 @@ from typing import Any, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from src.matclaw.config.base_config import DebugAgentSettings
-from src.matclaw.debug.prompts import (
+from matclaw.config.base_config import DebugAgentSettings
+from matclaw.debug.prompts import (
     ANALYZE_SYSTEM_PROMPT,
     DEBUG_SYSTEM_PROMPT,
     build_analyze_user_prompt,
     build_debug_user_prompt,
 )
-from src.matclaw.lab_journal import append_lab_journal
-from src.matclaw.llm.llm_client import call_chat_completion, resolve_api_key
-from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest, MatlabCallResult
-from src.matclaw.memory.memory_manager import MemoryManager
+from matclaw.lab_journal import append_lab_journal
+from matclaw.llm.llm_client import call_chat_completion, resolve_api_key
+from matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest, MatlabCallResult
+from matclaw.memory.memory_manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +236,7 @@ class DebugAgent:
         Returns:
             :class:`DebugAttemptResult` with diagnosis and/or execution output.
         """
-        from src.matclaw.security.file_access import guard_file_access
+        from matclaw.security.file_access import guard_file_access
 
         path = Path(file_path)
         rounds = max_rounds or int(self.settings.debug_max_rounds)

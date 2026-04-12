@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.matclaw.memory.memory_manager import MemoryManager
-from src.matclaw.skills.base import SkillResult
+from matclaw.memory.memory_manager import MemoryManager
+from matclaw.skills.base import SkillResult
 
 logger = logging.getLogger(__name__)
 

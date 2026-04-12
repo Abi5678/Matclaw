@@ -375,6 +375,8 @@ async def call_chat_with_tools(
     api_key: str | None = None,
     base_url: str | None = None,
     max_tokens: int = 4096,
+    retries: int = 3,
+    backoff_seconds: float = 1.0,
 ) -> dict[str, Any]:
     """
     Call LLM with tool definitions.      Returns a unified dict:
@@ -396,6 +398,41 @@ async def call_chat_with_tools(
     if not key:
         raise RuntimeError("Missing API key for provider.")
     p = (provider or "").lower().strip()
+
+    attempts = max(1, int(retries))
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+      try:
+        return await _call_chat_with_tools_once(
+            provider=p, model=model, system=system, messages=messages,
+            tools=tools, api_key=key, base_url=base_url, max_tokens=max_tokens,
+        )
+      except Exception as exc:
+        last_exc = exc
+        if attempt >= attempts:
+            break
+        sleep_for = backoff_seconds * (2 ** (attempt - 1))
+        await asyncio.sleep(sleep_for)
+
+    assert last_exc is not None
+    raise last_exc
+
+
+async def _call_chat_with_tools_once(
+    *,
+    provider: str,
+    model: str,
+    system: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    api_key: str,
+    base_url: str | None = None,
+    max_tokens: int = 4096,
+) -> dict[str, Any]:
+    """Single-attempt implementation of call_chat_with_tools."""
+    p = provider
+    key = api_key
 
     # ── Anthropic ────────────────────────────────────────────────────────────
     if p == "anthropic":

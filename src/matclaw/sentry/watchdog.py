@@ -13,9 +13,9 @@ import logging
 from pathlib import Path
 from typing import Callable, Any
 
-from src.matclaw.config.base_config import SentrySettings, LabJournalSettings
-from src.matclaw.core.rpi_executor import RPIExecutor
-from src.matclaw.lab_journal import append_lab_journal
+from matclaw.config.base_config import SentrySettings, LabJournalSettings
+from matclaw.core.rpi_executor import RPIExecutor
+from matclaw.lab_journal import append_lab_journal
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +49,8 @@ class SentryFileHandler(FileSystemEventHandler):
         try:
             import os
             if os.environ.get("NVIDIA_API_KEY"):
-                from src.matclaw.llm.nemotron_client import NemotronClient
-                from src.matclaw.watchdog.parsers import load_mat, load_csv
+                from matclaw.llm.nemotron_client import NemotronClient
+                from matclaw.watchdog.parsers import load_mat, load_csv
                 meta = {}
                 if path.suffix.lower() == ".mat":
                     meta = load_mat(path)

@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.matclaw.matlab.matlab_bridge import MatlabBridge
+from matclaw.matlab.matlab_bridge import MatlabBridge
 
 logger = logging.getLogger(__name__)
 

@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from src.matclaw.core.job_manager import JobManager
-    from src.matclaw.core.runtimes import RuntimeRegistry
+    from matclaw.core.job_manager import JobManager
+    from matclaw.core.runtimes import RuntimeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -187,16 +187,18 @@ class Scheduler:
                 "SELECT * FROM scheduled_tasks WHERE enabled=1 AND next_run_at<=?",
                 (now,),
             ).fetchall()
-
-        for row in due:
-            task = ScheduledTask(**dict(row))
-            self._dispatch(task)
-            interval = _cron_to_interval(task.cron_expression)
-            with self._conn() as conn:
+            # Atomically mark all due tasks as dispatched in the same transaction
+            for row in due:
+                task = ScheduledTask(**dict(row))
+                interval = _cron_to_interval(task.cron_expression)
                 conn.execute(
                     "UPDATE scheduled_tasks SET last_run_at=?, next_run_at=?, run_count=run_count+1 WHERE id=?",
                     (now, now + interval, task.id),
                 )
+        # Dispatch after commit so DB lock isn't held during execution
+        for row in due:
+            task = ScheduledTask(**dict(row))
+            self._dispatch(task)
 
     def _dispatch(self, task: ScheduledTask) -> None:
         rt_reg = self._runtime_registry

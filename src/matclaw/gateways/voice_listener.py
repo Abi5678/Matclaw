@@ -25,10 +25,10 @@ from typing import Any, AsyncIterator, Callable, Optional
 
 from pydantic import BaseModel, Field
 
-from src.matclaw.core.rpi_executor import RPIExecutor
-from src.matclaw.matlab.matlab_bridge import MatlabBridge
-from src.matclaw.memory.memory_manager import MemoryManager
-from src.matclaw.skills import load_skill_logic
+from matclaw.core.rpi_executor import RPIExecutor
+from matclaw.matlab.matlab_bridge import MatlabBridge
+from matclaw.memory.memory_manager import MemoryManager
+from matclaw.skills import load_skill_logic
 
 logger = logging.getLogger(__name__)
 

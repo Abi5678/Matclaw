@@ -9,8 +9,8 @@ import logging
 import os
 from pathlib import Path
 
-from src.matclaw.memory.memory import MemoryStore
-from src.matclaw.watchdog.parsers import load_csv, load_mat
+from matclaw.memory.memory import MemoryStore
+from matclaw.watchdog.parsers import load_csv, load_mat
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def _nemotron_summarize(path: Path, meta: dict) -> str:
     if not os.environ.get("NVIDIA_API_KEY"):
         return ""
     try:
-        from src.matclaw.llm.nemotron_client import NemotronClient
+        from matclaw.llm.nemotron_client import NemotronClient
         client = NemotronClient()
         return client.summarize_file(str(path), meta)
     except Exception as exc:

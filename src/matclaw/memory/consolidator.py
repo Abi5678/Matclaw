@@ -20,9 +20,9 @@ from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.matclaw.config.base_config import LLMSettings
-    from src.matclaw.core.experiment import ExperimentRecord, ExperimentTracker
-    from src.matclaw.memory.knowledge_base import KnowledgeBase
+    from matclaw.config.base_config import LLMSettings
+    from matclaw.core.experiment import ExperimentRecord, ExperimentTracker
+    from matclaw.memory.knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ class ConsolidationEngine:
         records: list[ExperimentRecord],
     ) -> list[str]:
         """Call the LLM to extract lessons, strategies, and failures."""
-        from src.matclaw.llm.llm_client import call_chat_completion, resolve_api_key
+        from matclaw.llm.llm_client import call_chat_completion, resolve_api_key
 
         provider = self._llm_provider
         model = self._llm_model

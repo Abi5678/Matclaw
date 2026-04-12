@@ -44,8 +44,8 @@ class FileAccessDecision(BaseModel):
 def _search_matlab_path(filename: str) -> Path | None:
     """Try to find a file on MATLAB's path using ``which()``."""
     try:
-        from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
-        from src.matclaw.config.base_config import MatClawSettings
+        from matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
+        from matclaw.config.base_config import MatClawSettings
         settings = MatClawSettings()
         bridge = MatlabBridge(settings=settings.matlab)
         bridge.start()

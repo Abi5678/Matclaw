@@ -41,37 +41,39 @@ class SessionStore:
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """Return all sessions ordered by updated_at desc, WITHOUT messages (for speed)."""
-        conn = self._conn()
-        try:
-            rows = conn.execute(
-                "SELECT id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
-            ).fetchall()
-            return [
-                {"id": r[0], "title": r[1], "createdAt": r[2], "updatedAt": r[3], "messages": []}
-                for r in rows
-            ]
-        finally:
-            conn.close()
+        with self._lock:
+            conn = self._conn()
+            try:
+                rows = conn.execute(
+                    "SELECT id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+                ).fetchall()
+                return [
+                    {"id": r[0], "title": r[1], "createdAt": r[2], "updatedAt": r[3], "messages": []}
+                    for r in rows
+                ]
+            finally:
+                conn.close()
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Return a single session with full messages."""
-        conn = self._conn()
-        try:
-            row = conn.execute(
-                "SELECT id, title, created_at, updated_at, messages FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if not row:
-                return None
-            return {
-                "id": row[0],
-                "title": row[1],
-                "createdAt": row[2],
-                "updatedAt": row[3],
-                "messages": json.loads(row[4]),
-            }
-        finally:
-            conn.close()
+        with self._lock:
+            conn = self._conn()
+            try:
+                row = conn.execute(
+                    "SELECT id, title, created_at, updated_at, messages FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0],
+                    "title": row[1],
+                    "createdAt": row[2],
+                    "updatedAt": row[3],
+                    "messages": json.loads(row[4]),
+                }
+            finally:
+                conn.close()
 
     # ── write ────────────────────────────────────────────────────────────────
 

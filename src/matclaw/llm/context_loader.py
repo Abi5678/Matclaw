@@ -38,7 +38,7 @@ def load_lab_context(
     # Workspace audit (requires MATLAB)
     if matlab_bridge and hasattr(matlab_bridge, "is_healthy") and matlab_bridge.is_healthy():
         try:
-            from src.matclaw.skills.workspace_auditor.logic import run as workspace_audit_run
+            from matclaw.skills.workspace_auditor.logic import run as workspace_audit_run
             result = workspace_audit_run(matlab_bridge)
             if getattr(result, "success", False) and getattr(result, "data", None):
                 data = result.data
@@ -83,7 +83,7 @@ def load_lab_context(
             logger.warning("Memory query failed: %s", exc)
     else:
         try:
-            from src.matclaw.memory.memory_manager import MemoryManager
+            from matclaw.memory.memory_manager import MemoryManager
             mm = MemoryManager(persist_directory=persist_directory)
             mm._ensure_client()
             results = mm.query_context("recent artifacts parameters lessons", n_results=memory_n_results)

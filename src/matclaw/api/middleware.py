@@ -19,7 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 if TYPE_CHECKING:
-    from src.matclaw.api.auth import APIKeyStore
+    from matclaw.api.auth import APIKeyStore
 
 logger = logging.getLogger(__name__)
 

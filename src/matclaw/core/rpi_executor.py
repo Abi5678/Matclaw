@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from src.matclaw.config.base_config import MatClawSettings
-    from src.matclaw.core.experiment import ExperimentTracker
+    from matclaw.config.base_config import MatClawSettings
+    from matclaw.core.experiment import ExperimentTracker
 
-from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
-from src.matclaw.memory.memory_manager import MemoryManager
-from src.matclaw.skills import load_skill_logic
-from src.matclaw.skills.vision_analyst import VisionAnalyst
+from matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
+from matclaw.memory.memory_manager import MemoryManager
+from matclaw.skills import load_skill_logic
+from matclaw.skills.vision_analyst import VisionAnalyst
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +209,7 @@ class RPIExecutor:
         if path.suffix.lower() == ".m":
             summary_parts.append(f"Detected .m file: {name}.")
             try:
-                from src.matclaw.debug.debug_agent import DebugAgent
+                from matclaw.debug.debug_agent import DebugAgent
 
                 debug_agent = DebugAgent(
                     self.matlab_bridge,
@@ -460,9 +460,9 @@ class RPIExecutor:
         Returns:
             Skill result, MATLAB output string, memory query string, or pending-HITL dict.
         """
-        from src.matclaw.config.base_config import MatClawSettings
-        from src.matclaw.gateways.nl_router import resolve_skill_from_nl, route_nl_message
-        from src.matclaw.skills import list_skills
+        from matclaw.config.base_config import MatClawSettings
+        from matclaw.gateways.nl_router import resolve_skill_from_nl, route_nl_message
+        from matclaw.skills import list_skills
 
         cfg = settings or MatClawSettings()
         if self._on_start is not None:
@@ -492,7 +492,7 @@ class RPIExecutor:
 
         lab_context_str: str | None = None
         try:
-            from src.matclaw.llm.context_loader import format_lab_context_for_prompt, load_lab_context
+            from matclaw.llm.context_loader import format_lab_context_for_prompt, load_lab_context
 
             lab_ctx = load_lab_context(
                 matlab_bridge=self.matlab_bridge,
@@ -527,8 +527,8 @@ class RPIExecutor:
             return self.run_rpi("workspace_auditor", context=hybrid_prompt, chat_id=chat_id)
 
         if intent_result.intent == "analyze_file" and intent_result.file_path:
-            from src.matclaw.debug.debug_agent import DebugAgent
-            from src.matclaw.security.file_access import guard_file_access
+            from matclaw.debug.debug_agent import DebugAgent
+            from matclaw.security.file_access import guard_file_access
 
             decision = guard_file_access(intent_result.file_path)
             if not decision.allow:

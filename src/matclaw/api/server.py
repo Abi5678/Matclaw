@@ -35,31 +35,31 @@ if str(ROOT) not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
-from src.matclaw.config.base_config import MatClawSettings
-from src.matclaw.matlab.matlab_bridge import MatlabBridge
-from src.matclaw.memory.memory_manager import MemoryManager
-from src.matclaw.core.experiment import ExperimentTracker
-from src.matclaw.llm.llm_client import call_chat_completion, call_chat_completion_stream, _extract_code_from_reasoning
-from src.matclaw.skills import list_skills, load_skill_logic
-from src.matclaw.api.nl_router import route_nl_message
-from src.matclaw.api.demos import find_demo
-from src.matclaw.agents.registry import AgentRegistry, AgentDefinition
-from src.matclaw.core.static_analyzer import StaticAnalyzer
-from src.matclaw.memory.episodic_memory import EpisodicMemoryManager, Episode
-from src.matclaw.core.state_manager import AsyncStateTracker, ExecutionState
-from src.matclaw.memory.session_store import SessionStore
-from src.matclaw.core.pipeline_store import PipelineStore
-from src.matclaw.core.task_router import TaskRouter, pipeline_to_dag_plan
-from src.matclaw.core.runtimes import RuntimeRegistry, MatlabRuntime, PythonRuntime, ShellRuntime
-from src.matclaw.core.scheduler import Scheduler, ScheduledTask
-from src.matclaw.core.heartbeat import Heartbeat
-from src.matclaw.core.job_manager import JobManager
-from src.matclaw.api.auth import APIKeyStore
-from src.matclaw.api.middleware import EnterpriseMiddleware, MetricsStore
-from src.matclaw.tools.registry import tool_registry
-from src.matclaw.core.agentic_loop import run_agentic_loop
-from src.matclaw.core.code_doctor import run_code_doctor
-from src.matclaw.gateways.webhook import WebhookRequest, WebhookResponse
+from matclaw.config.base_config import MatClawSettings
+from matclaw.matlab.matlab_bridge import MatlabBridge
+from matclaw.memory.memory_manager import MemoryManager
+from matclaw.core.experiment import ExperimentTracker
+from matclaw.llm.llm_client import call_chat_completion, call_chat_completion_stream, _extract_code_from_reasoning
+from matclaw.skills import list_skills, load_skill_logic
+from matclaw.api.nl_router import route_nl_message
+from matclaw.api.demos import find_demo
+from matclaw.agents.registry import AgentRegistry, AgentDefinition
+from matclaw.core.static_analyzer import StaticAnalyzer
+from matclaw.memory.episodic_memory import EpisodicMemoryManager, Episode
+from matclaw.core.state_manager import AsyncStateTracker, ExecutionState
+from matclaw.memory.session_store import SessionStore
+from matclaw.core.pipeline_store import PipelineStore
+from matclaw.core.task_router import TaskRouter, pipeline_to_dag_plan
+from matclaw.core.runtimes import RuntimeRegistry, MatlabRuntime, PythonRuntime, ShellRuntime
+from matclaw.core.scheduler import Scheduler, ScheduledTask
+from matclaw.core.heartbeat import Heartbeat
+from matclaw.core.job_manager import JobManager
+from matclaw.api.auth import APIKeyStore
+from matclaw.api.middleware import EnterpriseMiddleware, MetricsStore
+from matclaw.tools.registry import tool_registry
+from matclaw.core.agentic_loop import run_agentic_loop
+from matclaw.core.code_doctor import run_code_doctor
+from matclaw.gateways.webhook import WebhookRequest, WebhookResponse
 
 import uuid
 from datetime import datetime
@@ -303,7 +303,7 @@ def _build_messages(
 
     # Dynamically append registered agent context to the system prompt
     try:
-        from src.matclaw.agents.registry import AgentRegistry
+        from matclaw.agents.registry import AgentRegistry
         agents = AgentRegistry().list_agents()
         if agents:
             agent_lines = "\n".join([f"- {a.id}: {a.name} — {a.trigger_condition}" for a in agents])
@@ -523,7 +523,7 @@ async def _apply_matlab_headless_figures() -> None:
     try:
         if not bridge.is_healthy():
             return
-        from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
+        from matclaw.matlab.matlab_bridge import MatlabCallRequest
 
         req = MatlabCallRequest(
             function="eval",
@@ -724,7 +724,7 @@ def _run_via_script(code: str) -> tuple[bool, str]:
     This avoids evalc('...inline...') which breaks on multi-line code.
     """
     import tempfile
-    from src.matclaw.matlab.matlab_bridge import MatlabCallRequest
+    from matclaw.matlab.matlab_bridge import MatlabCallRequest
 
     # Write as ASCII-only — MATLAB parser rejects non-ASCII characters
     # (smart quotes, em-dashes, pi symbol, arrows, etc.) in .m files,
@@ -915,7 +915,7 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
                      very long scripts). Isolated; slow cold start per run.
     2. ENGINE MODE — shared MATLAB Engine for Python (default for plots & short scripts).
     """
-    from src.matclaw.matlab.batch_runner import (
+    from matclaw.matlab.batch_runner import (
         MATLAB_BIN,
         run_batch,
         split_matlab_script_and_local_functions,
@@ -1117,7 +1117,7 @@ async def health():
         logger.error(f"Health check failed: {exc}")
         matlab_status = {"healthy": False, "error": str(exc)}
 
-    from src.matclaw.llm.llm_client import resolve_api_key
+    from matclaw.llm.llm_client import resolve_api_key
 
     prov = (settings.llm.provider or "").lower().strip()
     llm_key = resolve_api_key(settings.llm.provider, settings.llm.api_key)
@@ -1361,20 +1361,23 @@ async def run_pipeline_endpoint(pipeline_id: str):
                     try:
                         agent_def = AgentRegistry().get_agent(node.agent_id)
                     except Exception:
-                        pass
+                        logger.exception("Failed to load agent '%s'", node.agent_id)
+                    if not agent_def:
+                        logger.warning("Agent '%s' not found for node '%s'; using default persona.", node.agent_id, node_id)
+                        await queue.put(_sse("node_warning", {"node_id": node_id, "warning": f"Agent '{node.agent_id}' not found, using default."}))
 
                 agent_system = agent_def.system_prompt if agent_def else MATCLAW_PERSONA
                 task_text = node.execution_payload.get("task", node.description)
                 node_tool = node.execution_payload.get("tool", "")
                 node_code = (node.execution_payload.get("code") or "").strip()
+                node_timeout = node.execution_payload.get("timeout_seconds") or 300  # default 5 min per node
 
-                # Inject upstream context
+                # Inject upstream context using graph topology
+                predecessors = [src_id for src_id, targets in router.graph.items() if node_id in targets]
                 upstream_ctx = ""
-                for inp in node.inputs:
-                    for prev_id, prev_out in node_results.items():
-                        prev_node = router.nodes.get(prev_id)
-                        if prev_node and inp in prev_node.outputs:
-                            upstream_ctx += f"\n\nOutput from upstream node '{prev_id}':\n{prev_out}"
+                for pred_id in predecessors:
+                    if pred_id in node_results:
+                        upstream_ctx += f"\n\nOutput from upstream node '{pred_id}':\n{node_results[pred_id]}"
                 if upstream_ctx:
                     task_text = task_text + upstream_ctx
 
@@ -1385,37 +1388,49 @@ async def run_pipeline_endpoint(pipeline_id: str):
                     agent_result = ""
                     node_plots: list[str] = []
 
-                    if node_tool == "run_matlab" and node_code:
-                        # Path A: direct execution
-                        exec_output, node_plots = await asyncio.to_thread(_run_matlab_and_collect, node_code, task_text)
-                        agent_result = exec_output
-                    elif node_tool == "run_matlab":
-                        # Path B: LLM generates then executes
-                        raw = await asyncio.to_thread(
-                            call_chat_completion,
-                            provider=settings.llm.provider,
-                            model=settings.llm.model,
-                            system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
-                            messages=[{"role": "user", "content": task_text}],
-                            api_key=settings.llm.api_key,
-                        )
-                        code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
-                        generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
-                        if generated_code:
-                            exec_output, node_plots = await asyncio.to_thread(_run_matlab_and_collect, generated_code, task_text)
-                            agent_result = exec_output
+                    async def _execute_node() -> tuple[str, list[str]]:
+                        """Execute a single pipeline node and return (result, plots)."""
+                        _result = ""
+                        _plots: list[str] = []
+
+                        if node_tool == "run_matlab" and node_code:
+                            # Path A: direct execution
+                            exec_output, _plots = await asyncio.to_thread(_run_matlab_and_collect, node_code, task_text)
+                            _result = exec_output
+                        elif node_tool == "run_matlab":
+                            # Path B: LLM generates then executes
+                            raw = await asyncio.to_thread(
+                                call_chat_completion,
+                                provider=settings.llm.provider,
+                                model=settings.llm.model,
+                                system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
+                                messages=[{"role": "user", "content": task_text}],
+                                api_key=settings.llm.api_key,
+                            )
+                            code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+                            generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
+                            if generated_code:
+                                exec_output, _plots = await asyncio.to_thread(_run_matlab_and_collect, generated_code, task_text)
+                                _result = exec_output
+                            else:
+                                raise RuntimeError("LLM did not generate executable MATLAB code")
                         else:
-                            agent_result = raw
-                    else:
-                        # Path C: LLM text only
-                        agent_result = await asyncio.to_thread(
-                            call_chat_completion,
-                            provider=settings.llm.provider,
-                            model=settings.llm.model,
-                            system=agent_system,
-                            messages=[{"role": "user", "content": task_text}],
-                            api_key=settings.llm.api_key,
-                        )
+                            # Path C: LLM text only
+                            _result = await asyncio.to_thread(
+                                call_chat_completion,
+                                provider=settings.llm.provider,
+                                model=settings.llm.model,
+                                system=agent_system,
+                                messages=[{"role": "user", "content": task_text}],
+                                api_key=settings.llm.api_key,
+                            )
+
+                        return _result, _plots
+
+                    agent_result, node_plots = await asyncio.wait_for(
+                        _execute_node(),
+                        timeout=float(node_timeout),
+                    )
 
                     node_results[node_id] = agent_result
                     router.mark_status(node_id, "completed", agent_result)
@@ -1425,9 +1440,20 @@ async def run_pipeline_endpoint(pipeline_id: str):
                         "plots": node_plots,
                     }))
 
+                except asyncio.TimeoutError:
+                    error_msg = f"Node timed out after {node_timeout}s"
+                    router.mark_status(node_id, "failed")
+                    await queue.put(_sse("node_failed", {"node_id": node_id, "error": error_msg}))
+                    await queue.put(_sse("pipeline_error", {"error": f"Node '{node_id}' failed: {error_msg}"}))
+                    pipeline_store.update_run(run_id, "failed", {"error": error_msg, "failed_node": node_id})
+                    return  # stop pipeline execution
+
                 except Exception as exc:
                     router.mark_status(node_id, "failed")
                     await queue.put(_sse("node_failed", {"node_id": node_id, "error": str(exc)}))
+                    await queue.put(_sse("pipeline_error", {"error": f"Node '{node_id}' failed: {exc}"}))
+                    pipeline_store.update_run(run_id, "failed", {"error": str(exc), "failed_node": node_id})
+                    return  # stop pipeline execution
 
             await queue.put(_sse("pipeline_complete", {"run_id": run_id}))
             pipeline_store.update_run(run_id, "completed", {"node_results": node_results})
@@ -2314,7 +2340,7 @@ async def run_nl_stream(req: RunRequest):
             elif action == "multi_agent_swarm":
                 skill_name = "multi_agent_swarm"
                 dag_data = plan.get("dag_plan", {})
-                from src.matclaw.core.task_router import TaskRouter, DAGPlan
+                from matclaw.core.task_router import TaskRouter, DAGPlan
                 router = TaskRouter()
                 try:
                     target_plan = DAGPlan(**dag_data)
@@ -2552,7 +2578,7 @@ def list_tools():
 @app.post("/api/tools/{tool_name}/run")
 async def run_tool(tool_name: str, inputs: dict):
     """Execute a registered tool by name."""
-    from src.matclaw.tools.base import ToolContext
+    from matclaw.tools.base import ToolContext
     tool = tool_registry.get(tool_name)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
@@ -2602,7 +2628,7 @@ class CreateKeyRequest(BaseModel):
 
 @app.post("/api/auth/keys")
 def create_api_key(req: CreateKeyRequest):
-    from src.matclaw.api.auth import Role
+    from matclaw.api.auth import Role
     raw_key, ak = _key_store.create_key(
         label=req.label,
         role=req.role,  # type: ignore[arg-type]

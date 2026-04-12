@@ -14,9 +14,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from src.matclaw.memory.memory_manager import MemoryManager
-from src.matclaw.matlab.matlab_bridge import MatlabBridge
-from src.matclaw.skills import load_skill_logic
+from matclaw.memory.memory_manager import MemoryManager
+from matclaw.matlab.matlab_bridge import MatlabBridge
+from matclaw.skills import load_skill_logic
 
 logger = logging.getLogger(__name__)
 

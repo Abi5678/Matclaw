@@ -7,7 +7,7 @@ from typing import Dict
 
 from pydantic import ValidationError
 
-from src.matclaw.config.base_config import MemorySettings
+from matclaw.config.base_config import MemorySettings
 from .schemas import SessionRecord
 
 logger = logging.getLogger(__name__)

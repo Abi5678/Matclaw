@@ -5,7 +5,7 @@ Don't let Nemotron guess — provide explicit tools it can call.
 
 from __future__ import annotations
 
-from src.matclaw.skills import list_skills
+from matclaw.skills import list_skills
 
 # OpenAI-compatible tool schema for Nemotron (Function Calling)
 # Intent mapping: "What happened last time?" -> query_memory | "Is MATLAB running?" -> workspace_auditor | "Plot y=sin(x)" -> run_matlab

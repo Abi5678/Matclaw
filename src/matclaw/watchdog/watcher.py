@@ -7,9 +7,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from src.matclaw.config.base_config import WatchdogSettings
-from src.matclaw.memory.memory import MemoryStore
-from src.matclaw.watchdog.ingestion_pipeline import ingest_file
+from matclaw.config.base_config import WatchdogSettings
+from matclaw.memory.memory import MemoryStore
+from matclaw.watchdog.ingestion_pipeline import ingest_file
 
 logger = logging.getLogger(__name__)
 

@@ -526,8 +526,13 @@ export default function PipelineCanvas() {
     if (!pipelineId) return
     // Reset node statuses to pending
     setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, status: 'pending', error: undefined } })))
-    const { run_id } = await runPipeline(pipelineId)
-    stream.startStream(run_id)
+    try {
+      const { run_id } = await runPipeline(pipelineId)
+      stream.startStream(run_id)
+    } catch (err) {
+      console.error('Pipeline run failed:', err)
+      stream.reset()
+    }
   }
 
   const handleLoadPipeline = async (id: string) => {

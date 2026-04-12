@@ -12,8 +12,8 @@ from typing import Any
 
 import numpy as np
 
-from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest, MatlabCallResult
-from src.matclaw.skills.base import SkillResult
+from matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest, MatlabCallResult
+from matclaw.skills.base import SkillResult
 
 logger = logging.getLogger(__name__)
 

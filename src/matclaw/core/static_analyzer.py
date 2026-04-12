@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any
 
-from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
+from matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
 
 logger = logging.getLogger(__name__)
 

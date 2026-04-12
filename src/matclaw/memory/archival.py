@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.matclaw.core.experiment import ExperimentTracker
-    from src.matclaw.memory.knowledge_base import KnowledgeBase
+    from matclaw.core.experiment import ExperimentTracker
+    from matclaw.memory.knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
 

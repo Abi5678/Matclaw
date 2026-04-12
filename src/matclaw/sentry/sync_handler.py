@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from src.matclaw.config.base_config import SyncSettings
+from matclaw.config.base_config import SyncSettings
 
 logger = logging.getLogger(__name__)
 

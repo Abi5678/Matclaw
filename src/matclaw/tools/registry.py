@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.matclaw.tools.base import BaseTool, ToolManifest
+    from matclaw.tools.base import BaseTool, ToolManifest
 
 logger = logging.getLogger(__name__)
 

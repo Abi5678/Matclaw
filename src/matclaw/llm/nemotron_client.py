@@ -27,7 +27,7 @@ try:
 except ImportError:
     OpenAI = None  # type: ignore[misc, assignment]
 
-from src.matclaw.llm.tools import get_tools_for_nemotron, tool_name_to_skill
+from matclaw.llm.tools import get_tools_for_nemotron, tool_name_to_skill
 
 NVIDIA_NIM_BASE = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MODEL = "nvidia/nvidia-nemotron-nano-9b-v2"
@@ -130,7 +130,7 @@ class NemotronClient:
         - Active Errors (warnings, scalar struct, etc.)
         - Persona Instruction (snarky tone for errors, empty workspace)
         """
-        from src.matclaw.llm.context_loader import load_lab_context
+        from matclaw.llm.context_loader import load_lab_context
 
         bridge = matlab_bridge or self._matlab_bridge
         mm = memory_manager or self._memory_manager

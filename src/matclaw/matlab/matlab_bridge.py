@@ -12,8 +12,8 @@ from typing import Any, Callable, Dict, Iterator, Optional
 
 from pydantic import BaseModel
 
-from src.matclaw.config.base_config import MatlabSettings
-from src.matclaw.security.guardrail import guard_matlab_call
+from matclaw.config.base_config import MatlabSettings
+from matclaw.security.guardrail import guard_matlab_call
 
 logger = logging.getLogger(__name__)
 DEFAULT_MATLAB_CALL_TIMEOUT_SECONDS = 90.0  # 90s hard cap per call; CodeDoctor simplifies if needed
@@ -287,12 +287,6 @@ class MatlabBridge:
             self._state.healthy = False
             return MatlabCallResult(success=False, error=msg)
 
-        if self._before_call is not None:
-            try:
-                self._before_call(request)
-            except Exception:
-                logger.exception("before_call callback failed")
-
         # Guardrails: every MATLAB call request must pass before execution.
         try:
             decision = guard_matlab_call(request)
@@ -320,6 +314,12 @@ class MatlabBridge:
         try:
             with self._lock:
                 try:
+                    if self._before_call is not None:
+                        try:
+                            self._before_call(request)
+                        except Exception:
+                            logger.exception("before_call callback failed")
+
                     logger.info(
                         "Invoking MATLAB function.",
                         extra={
@@ -377,12 +377,16 @@ class MatlabBridge:
         # gets a clean session (the hung thread may run forever otherwise).
         if timed_out and not self._restart_pending:
             self._restart_pending = True
+            old_pool = self._pool  # capture reference before replacement
             def _bg_restart() -> None:
                 import time as _t
                 _t.sleep(0.5)
                 try:
                     logger.info("Background MATLAB restart triggered after timeout...")
-                    self._pool.shutdown(wait=False)
+                    old_pool.shutdown(wait=True, cancel_futures=True)
+                except Exception:
+                    logger.warning("Old thread pool cleanup incomplete; thread may be leaked.", exc_info=True)
+                try:
                     self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="matlab-call")
                     self.restart()
                     logger.info("MATLAB engine restarted successfully after timeout.")
@@ -394,7 +398,7 @@ class MatlabBridge:
 
         # Outside the lock, optionally invoke the autonomous debugging loop.
         if self._debug_agent is not None and failure is not None and failure.error:
-            from src.matclaw.debug.debug_agent import DebugAttemptResult
+            from matclaw.debug.debug_agent import DebugAttemptResult
             debug_result: DebugAttemptResult = self._debug_agent.handle_failure(request, failure)
             logger.info(
                 "Autonomous MATLAB debug attempt complete.",

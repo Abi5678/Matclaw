@@ -174,11 +174,16 @@ class JobManager:
         assert self._queue is not None
         while not self._shutdown.is_set():
             try:
-                job_id, fn, timeout_seconds = await asyncio.wait_for(self._queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                continue
-            await self._execute_job(job_id, fn, timeout_seconds, worker_idx)
-            self._queue.task_done()
+                try:
+                    job_id, fn, timeout_seconds = await asyncio.wait_for(self._queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                await self._execute_job(job_id, fn, timeout_seconds, worker_idx)
+                self._queue.task_done()
+            except asyncio.CancelledError:
+                raise  # allow clean shutdown
+            except Exception:
+                logger.exception("JobManager worker %d unexpected error; continuing.", worker_idx)
 
     async def _execute_job(self, job_id: str, fn: JobCallable, timeout_seconds: float | None, worker_idx: int) -> None:
         with self._jobs_lock:

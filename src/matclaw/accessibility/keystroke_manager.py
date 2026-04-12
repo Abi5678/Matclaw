@@ -14,9 +14,9 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 
-from src.matclaw.accessibility.intent_expansion import IntentExpansionResult, expand_prompt_to_goal
-from src.matclaw.matlab.matlab_bridge import MatlabBridge
-from src.matclaw.memory.memory_manager import MemoryManager
+from matclaw.accessibility.intent_expansion import IntentExpansionResult, expand_prompt_to_goal
+from matclaw.matlab.matlab_bridge import MatlabBridge
+from matclaw.memory.memory_manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 

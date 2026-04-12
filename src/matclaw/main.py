@@ -3,10 +3,10 @@ Application entry helpers: wire shared ``RPIExecutor`` and gateways.
 
 Example — start the hybrid (voice + clipboard) keystroke gateway alongside your app::
 
-    from src.matclaw.config.base_config import MatClawSettings
-    from src.matclaw.core.rpi_executor import RPIExecutor
-    from src.matclaw.gateways.voice_client import BufferedVoiceClient
-    from src.matclaw.main import start_hybrid_keystroke_gateway
+    from matclaw.config.base_config import MatClawSettings
+    from matclaw.core.rpi_executor import RPIExecutor
+    from matclaw.gateways.voice_client import BufferedVoiceClient
+    from matclaw.main import start_hybrid_keystroke_gateway
 
     settings = MatClawSettings()
     executor = RPIExecutor(matlab_bridge=bridge, memory_manager=memory)
@@ -27,11 +27,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from typing import Any
-from src.matclaw.gateways.voice_client import VoiceClient
+from matclaw.gateways.voice_client import VoiceClient
 
 if TYPE_CHECKING:
-    from src.matclaw.config.base_config import MatClawSettings
-    from src.matclaw.core.rpi_executor import RPIExecutor
+    from matclaw.config.base_config import MatClawSettings
+    from matclaw.core.rpi_executor import RPIExecutor
 
 
 def start_hybrid_keystroke_gateway(
