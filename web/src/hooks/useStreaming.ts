@@ -89,6 +89,7 @@ export function useStreaming() {
     }, 300_000)
 
     let receivedDone = false
+    let receivedServerEvent = false  // any SSE event received = stream was established
     try {
       const body: Record<string, unknown> = {
         text,
@@ -138,12 +139,12 @@ export function useStreaming() {
             try {
               const data = JSON.parse(line.slice(6))
               switch (currentEvent) {
-                case 'thinking': callbacks.onThinking(data.token); break
-                case 'text': callbacks.onText(data.token); break
-                case 'tool_start': callbacks.onToolStart(data); break
-                case 'tool_result': callbacks.onToolResult(data); break
-                case 'done': receivedDone = true; callbacks.onDone(data); break
-                case 'error': callbacks.onError(data.message); break
+                case 'thinking': receivedServerEvent = true; callbacks.onThinking(data.token); break
+                case 'text': receivedServerEvent = true; callbacks.onText(data.token); break
+                case 'tool_start': receivedServerEvent = true; callbacks.onToolStart(data); break
+                case 'tool_result': receivedServerEvent = true; callbacks.onToolResult(data); break
+                case 'done': receivedDone = true; receivedServerEvent = true; callbacks.onDone(data); break
+                case 'error': receivedServerEvent = true; callbacks.onError(data.message); break
                 case 'sentry_start':
                   callbacks.onSentryUpdate?.({ type: 'start', message: data.message }); break
                 case 'sentry_issue':
@@ -211,8 +212,12 @@ export function useStreaming() {
       }
     } catch (err) {
       const name = (err as Error).name
-      // Suppress AbortError (user cancelled) and Safari's "Load failed" after a clean done event
-      if (name !== 'AbortError' && !(receivedDone && (err as Error).message?.includes('Load failed'))) {
+      const msg = (err as Error).message ?? ''
+      // Suppress AbortError (user cancelled) and Safari's spurious "Load failed" /
+      // "Failed to fetch" errors that fire whenever the server closes an SSE stream,
+      // including after a clean error event (receivedServerEvent = true).
+      const isSafariStreamClose = msg.includes('Load failed') || msg.includes('Failed to fetch')
+      if (name !== 'AbortError' && !(isSafariStreamClose && receivedServerEvent)) {
         callbacks.onError(`Stream failed: ${err}`)
       }
     } finally {

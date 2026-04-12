@@ -27,7 +27,7 @@ def main() -> None:
         threading.Thread(target=_open, daemon=True).start()
 
     uvicorn.run(
-        "src.matclaw.api.server:app",
+        "matclaw.api.server:app",
         host=host,
         port=port,
         log_level="info",

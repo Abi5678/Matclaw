@@ -3,5 +3,5 @@
 # Fresh wipe (memory, sessions, plots, Chroma): python scripts/reset_local_state.py --kill-server
 cd "/Users/abishek/MatClaw"
 source .venv/bin/activate
-exec python -m src.matclaw.api.main "$@"
+exec python -m matclaw.api.main "$@"
 
