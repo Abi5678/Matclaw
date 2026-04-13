@@ -2,13 +2,14 @@ import { useState, useRef, useCallback } from 'react'
 import type { NodeStatus } from '../lib/pipeline'
 import { cancelRun } from '../lib/pipeline'
 
-const API = 'http://localhost:8000'
+import { API } from '../lib/constants'
 
 export interface PipelineStreamState {
   nodeStatuses: Record<string, NodeStatus>
   isRunning: boolean
   runId: string | null
   error: string | null
+  warnings: Record<string, string>
   totalNodes: number
   completedNodes: number
 }
@@ -19,6 +20,7 @@ export function usePipelineStream() {
     isRunning: false,
     runId: null,
     error: null,
+    warnings: {},
     totalNodes: 0,
     completedNodes: 0,
   })
@@ -32,6 +34,7 @@ export function usePipelineStream() {
       isRunning: false,
       runId: null,
       error: null,
+      warnings: {},
       totalNodes: 0,
       completedNodes: 0,
     })
@@ -79,6 +82,16 @@ export function usePipelineStream() {
               error: data.error as string | undefined,
               finishedAt: Date.now(),
             },
+          },
+        }))
+        break
+
+      case 'node_warning':
+        setState(s => ({
+          ...s,
+          warnings: {
+            ...s.warnings,
+            [data.node_id as string]: data.warning as string,
           },
         }))
         break

@@ -3,7 +3,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 
-const API_WS = 'ws://localhost:8000/api/terminal'
+import { API_WS } from '../lib/constants'
 
 export default function TerminalTab() {
   const terminalRef = useRef<HTMLDivElement>(null)

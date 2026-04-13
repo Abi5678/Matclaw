@@ -11,9 +11,9 @@ except ImportError:  # pragma: no cover
     Anthropic = None  # type: ignore[misc, assignment]
 
 try:
-    import google.generativeai as genai
+    from google import genai as _google_genai
 except ImportError:  # pragma: no cover
-    genai = None  # type: ignore[assignment]
+    _google_genai = None  # type: ignore[assignment]
 
 try:
     from openai import OpenAI, AsyncOpenAI
@@ -267,24 +267,17 @@ def call_chat_completion(
                 return (resp.choices[0].message.content if resp.choices else "").strip()
 
             if p == "google":
-                if genai is None:
-                    raise RuntimeError("google-generativeai package not installed.")
-                genai.configure(api_key=key)
-                m = genai.GenerativeModel(model)
+                if _google_genai is None:
+                    raise RuntimeError("google-genai package not installed.")
+                client = _google_genai.Client(api_key=key)
                 parts = [system, "\n\n"]
                 for msg in messages:
                     role = msg.get("role", "user")
                     content = msg.get("content", "")
                     parts.append(f"{role.upper()}: {content}\n")
                 prompt = "".join(parts)
-                r = m.generate_content(prompt)
-                try:
-                    return (r.text or "").strip()
-                except ValueError:
-                    if r.candidates:
-                        parts = r.candidates[0].content.parts
-                        return (parts[0].text if parts else "").strip()
-                    return ""
+                r = client.models.generate_content(model=model, contents=prompt)
+                return (r.text or "").strip()
 
             if Anthropic is None:
                 raise RuntimeError("anthropic package not installed.")

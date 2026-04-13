@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Eye, ArrowLeft, RefreshCw, Image as ImageIcon, Search, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
-const API = 'http://localhost:8000'
+import { API } from '../lib/constants'
 
 interface PlotEntry {
   name: string

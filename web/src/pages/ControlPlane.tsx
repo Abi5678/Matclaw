@@ -27,7 +27,7 @@ import AgentsTab from './Agents'
 import CodeEditor from '../components/CodeEditor'
 import PipelineCanvas from '../components/PipelineCanvas'
 
-const API = 'http://localhost:8000'
+import { API } from '../lib/constants'
 
 type MatlabUiStatus = 'checking' | 'online' | 'busy' | 'offline'
 

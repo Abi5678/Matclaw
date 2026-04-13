@@ -11,7 +11,7 @@ const AVAILABLE_TOOLS = [
   { id: 'run_matlab', label: 'MATLAB Bridge', description: 'Execute rigorous scientific functions natively on the local MATLAB engine', icon: Code }
 ]
 
-const API = 'http://localhost:8000'
+import { API } from '../lib/constants'
 
 interface Agent {
   id: string

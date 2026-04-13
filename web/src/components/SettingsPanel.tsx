@@ -4,7 +4,7 @@ import { type ThemeMode } from '../lib/themeContext'
 import { THEME_OPTIONS } from '../lib/constants'
 import { Check, Monitor, Moon, Sun, Palette, Plus, Trash2, X, Cpu } from 'lucide-react'
 
-const API = 'http://localhost:8000'
+import { API } from '../lib/constants'
 
 const PROVIDERS = [
   { value: 'nvidia', label: 'NVIDIA' },

@@ -74,12 +74,19 @@ def analyze_plot(
             return ""
     if provider == "google":
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key or os.environ.get("GOOGLE_API_KEY"))
-            model_name = model or os.environ.get("GOOGLE_VISION_MODEL", "gemini-1.5-pro")
-            m = genai.GenerativeModel(model_name)
-            img = genai.upload_file(str(path))
-            r = m.generate_content([img, prompt])
+            from google import genai
+            client = genai.Client(api_key=api_key or os.environ.get("GOOGLE_API_KEY"))
+            model_name = model or os.environ.get("GOOGLE_VISION_MODEL", "gemini-2.0-flash")
+            with path.open("rb") as f:
+                img_bytes = f.read()
+            media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+            r = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    genai.types.Part.from_bytes(data=img_bytes, mime_type=media_type),
+                    prompt,
+                ],
+            )
             return (r.text or "").strip()
         except Exception as exc:
             logger.exception("Vision analysis (Google) failed: %s", exc)

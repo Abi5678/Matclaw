@@ -1,6 +1,6 @@
 // ── Session persistence (localStorage + server write-through) ────────────────
 
-const API = 'http://localhost:8000'
+import { API } from './constants'
 
 /** Fire-and-forget sync to backend. Never throws. */
 function _syncToServer(session: Session): void {

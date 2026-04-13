@@ -1,7 +1,7 @@
 import { useRef, useCallback, useEffect } from 'react'
 import type { ProjectFile } from '../lib/sessions'
 
-const API = 'http://localhost:8000'
+import { API } from '../lib/constants'
 
 export interface SentryUpdate {
   type: 'start' | 'issue' | 'done'

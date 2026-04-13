@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react'
 import { Play, Save, FileCode2, Plus, X } from 'lucide-react'
 import type { ProjectFile } from '../lib/sessions'
 
-const API = 'http://localhost:8000'
+import { API } from '../lib/constants'
 
 interface EditorTab {
   file: ProjectFile
