@@ -272,6 +272,15 @@ This is a dynamics/simulation task. You MUST:
 6. Call sgtitle() with key stats: max altitude, max speed, total duration
 7. Print stats with fprintf at the end
 8. Use figure('Position',[50 50 1100 780]) for a large canvas
+
+CRITICAL — THE CODE IS NOT COMPLETE WITHOUT THESE EXACT LINES:
+  figure('Position',[50 50 1100 780]);
+  % ... subplot and plot/plot3 calls ...
+  sgtitle('...');
+Your code MUST contain at least one figure() call AND at least one plot(), plot3(), or subplot() call.
+A simulation that only computes arrays and never calls figure/plot IS WRONG and will be rejected.
+The LAST section of your code must always be the visualization block, not the ODE solver.
+
 DO NOT use tiny scale numbers. DO NOT generate a simple parametric helix. Generate REAL phased mission dynamics with correct engineering units.
 DO NOT call external functions — all code MUST be self-contained in a single script. No function calls to undefined helpers.
 """
@@ -295,9 +304,10 @@ def _build_messages(
 ) -> tuple[str, list[dict[str, str]]]:
     """Build (system_arg, messages) for the LLM call. Shared by sync and streaming paths."""
     # Inject intent-specific quality boost into the system prompt
+    # Simulations get BOTH boosts: physics requirements + mandatory figure/plot rules
     intent = _classify_intent(user_text)
     if intent == "simulation":
-        system = system + _SIMULATION_BOOST
+        system = system + _SIMULATION_BOOST + _VISUALIZATION_BOOST
     elif intent == "visualization":
         system = system + _VISUALIZATION_BOOST
 
@@ -906,6 +916,65 @@ def _should_use_matlab_batch(code: str) -> bool:
     return False
 
 
+def _ensure_visualization(code: str, req_text: str) -> str:
+    """
+    Safety net: if the LLM produced code that computes data but never opens a figure,
+    append a minimal auto-plot block so the user always gets something visual.
+
+    Detection: no 'figure' call AND no 'plot' / 'surf' / 'mesh' / 'bar' / 'histogram'
+    call anywhere in the code.
+    """
+    lower = code.lower()
+    has_figure = "figure" in lower
+    has_plot = any(kw in lower for kw in (
+        "plot(", "plot3(", "surf(", "mesh(", "contour(", "bar(", "histogram(",
+        "scatter(", "scatter3(", "imagesc(", "pcolor(", "fill(", "area(",
+        "subplot(", "polarplot(", "semilogx(", "semilogy(", "loglog(",
+    ))
+    if has_figure or has_plot:
+        return code  # already has visualization — leave untouched
+
+    # Detect numeric variables by scanning for assignment patterns like x = ...
+    # Build a fallback that plots whatever arrays were computed
+    logger.warning(
+        "_ensure_visualization: code has no figure/plot call — appending auto-plot fallback. "
+        "Request: %.80s", req_text
+    )
+    fallback = (
+        "\n% ── Auto-plot fallback (no figure call detected in generated code) ──\n"
+        "mc_vars = whos;\n"
+        "mc_plotted = false;\n"
+        "figure('Position',[50 50 1100 750]);\n"
+        "mc_ax = 1;\n"
+        "for mc_i = 1:numel(mc_vars)\n"
+        "    mc_v = mc_vars(mc_i);\n"
+        "    if ~strcmp(mc_v.class,'double'), continue; end\n"
+        "    mc_data = eval(mc_v.name);\n"
+        "    mc_sz = size(mc_data);\n"
+        "    if min(mc_sz) == 1 && max(mc_sz) > 1 && max(mc_sz) <= 100000\n"
+        "        subplot(2,3,min(mc_ax,6)); mc_ax = mc_ax+1;\n"
+        "        plot(mc_data,'LineWidth',1.5);\n"
+        "        title(mc_v.name,'Interpreter','none'); grid on;\n"
+        "        xlabel('Index'); ylabel(mc_v.name,'Interpreter','none');\n"
+        "        mc_plotted = true;\n"
+        "    elseif min(mc_sz) > 1 && max(mc_sz) <= 500\n"
+        "        subplot(2,3,min(mc_ax,6)); mc_ax = mc_ax+1;\n"
+        "        imagesc(mc_data); colorbar; axis equal tight;\n"
+        "        title(mc_v.name,'Interpreter','none'); grid on;\n"
+        "        mc_plotted = true;\n"
+        "    end\n"
+        "    if mc_ax > 6, break; end\n"
+        "end\n"
+        "if mc_plotted\n"
+        "    sgtitle('Computed Results (auto-generated plot)');\n"
+        "else\n"
+        "    close;\n"
+        "end\n"
+        "clear mc_vars mc_ax mc_i mc_v mc_data mc_sz mc_plotted;\n"
+    )
+    return code + fallback
+
+
 def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
     """
     Run MATLAB code, collect stdout + plots, return (output_text, plot_urls).
@@ -932,6 +1001,9 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
 
     # Auto-repair common LLM MATLAB code mistakes
     code = _sanitize_matlab_code(code)
+
+    # Ensure visualization: if the LLM forgot to add figure/plot calls, inject a fallback
+    code = _ensure_visualization(code, req_text)
 
     # ── Tier 1: Batch subprocess (heavy simulations only) ─────────────────────
     if MATLAB_BIN and _should_use_matlab_batch(code):
