@@ -678,7 +678,9 @@ def _capture_animated_gif(code: str, base_name: str) -> str | None:
     If code contains animation commands (drawnow / pause inside a loop),
     inject frame-capture scaffolding and assemble a GIF via Pillow.
     """
-    if "drawnow" not in code and ("for " not in code and "while " not in code):
+    # Only treat as animation if drawnow is explicitly present — bare for/while loops
+    # are extremely common in ODE solvers and must NOT trigger the GIF path.
+    if "drawnow" not in code:
         return None
 
     safe_base = re.sub(r'[^a-zA-Z0-9_-]', '_', base_name)[:60]
@@ -994,16 +996,17 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
     plot_name = f"plot_{ts}"
     plots: list[str] = []
 
+    # Auto-repair common LLM MATLAB code mistakes first
+    code = _sanitize_matlab_code(code)
+
+    # Ensure visualization BEFORE animation check — fallback may add plot calls
+    code = _ensure_visualization(code, req_text)
+
+    # Animation path: only when drawnow is present (pure compute loops must not trigger this)
     gif_url = _capture_animated_gif(code, plot_name)
     if gif_url:
         plots.append(gif_url)
         return f"Animation rendered: {gif_url.split('/')[-1]}", plots
-
-    # Auto-repair common LLM MATLAB code mistakes
-    code = _sanitize_matlab_code(code)
-
-    # Ensure visualization: if the LLM forgot to add figure/plot calls, inject a fallback
-    code = _ensure_visualization(code, req_text)
 
     # ── Tier 1: Batch subprocess (heavy simulations only) ─────────────────────
     if MATLAB_BIN and _should_use_matlab_batch(code):
