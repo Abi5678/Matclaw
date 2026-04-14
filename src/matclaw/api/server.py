@@ -1084,9 +1084,18 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
         f"end\n"
         f"close all;\n"
     )
+    # Wrap main body in try/catch so the saveas footer ALWAYS runs even when
+    # the user code errors mid-way (e.g. undefined variable, wrong dimension).
+    # Any figure drawn before the error will still be captured.
     wrapped_code = (
         "set(0, 'DefaultFigureVisible', 'off');\n"
-        + main_body
+        "matclaw_user_error = '';\n"
+        "try\n"
+        + main_body + "\n"
+        + "catch matclaw_user_exc\n"
+        + "  matclaw_user_error = matclaw_user_exc.message;\n"
+        + "  fprintf('MATLAB error in user code: %s\\n', matclaw_user_error);\n"
+        + "end\n"
         + engine_footer
         + (("\n" + local_fns) if local_fns else "")
     )
