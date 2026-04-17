@@ -476,6 +476,46 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
 
     return {"reply": reply_text, "action": action, "code": code} if reply_text else {}
 
+
+def _extract_matlab_for_node(raw: str) -> str:
+    """
+    Extract executable MATLAB code from an LLM response in any format:
+      1. Fenced ```matlab ... ``` block  (ideal)
+      2. JSON persona format with a "code" field  (MATCLAW_PERSONA bleed-through)
+      3. Reasoning-block embedded code  (thinking models)
+      4. Raw code with no fences  (fallback)
+    """
+    if not raw:
+        return ""
+
+    # 1. Fenced code block
+    blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    if blocks:
+        return blocks[-1].strip()
+
+    # 2. JSON persona response — extract the "code" field
+    try:
+        parsed = _parse_llm_response(raw)
+        code = parsed.get("code") or ""
+        if code and len(code) > 10:
+            return code.strip()
+    except Exception:
+        pass
+
+    # 3. Reasoning-block embedded code
+    extracted = _extract_code_from_reasoning(raw)
+    if extracted and len(extracted) > 10:
+        return extracted.strip()
+
+    # 4. Raw fallback — use entire response as code only if it looks like MATLAB
+    stripped = raw.strip()
+    matlab_signals = ("=", ";", "for ", "while ", "fprintf", "plot", "figure", "%")
+    if any(sig in stripped for sig in matlab_signals) and len(stripped) > 10:
+        return stripped
+
+    return ""
+
+
 PLOTS_DIR = ROOT / "plots"
 PLOTS_DIR.mkdir(exist_ok=True)
 
@@ -1483,8 +1523,6 @@ async def run_pipeline_endpoint(pipeline_id: str):
                             _result = exec_output
                         elif node_tool == "run_matlab":
                             # Path B: LLM generates then executes
-                            # Inject quality boosts so the node LLM call gets the same
-                            # simulation/visualization guidance as the main chat path.
                             intent = _classify_intent(task_text)
                             node_boost = ""
                             if intent == "simulation":
@@ -1492,11 +1530,13 @@ async def run_pipeline_endpoint(pipeline_id: str):
                             elif intent == "visualization":
                                 node_boost = _VISUALIZATION_BOOST
 
+                            # Use a code-only system prompt (NOT MATCLAW_PERSONA which
+                            # instructs the LLM to return JSON — that bleeds through and
+                            # produces {"reply":..., "code":...} instead of a code block).
                             node_system = (
-                                agent_system
+                                "You are an expert MATLAB engineer writing self-contained scripts.\n"
                                 + node_boost
-                                + "\n\nCRITICAL: Respond with ONLY a fenced MATLAB code block — no prose, "
-                                "no explanation before or after. The entire response must be:\n"
+                                + "\nRespond with ONLY a fenced MATLAB code block:\n"
                                 "```matlab\n% your code here\n```"
                             )
                             raw = await asyncio.to_thread(
@@ -1506,16 +1546,9 @@ async def run_pipeline_endpoint(pipeline_id: str):
                                 system=node_system,
                                 messages=[{"role": "user", "content": task_text}],
                                 api_key=settings.llm.api_key,
+                                max_tokens=2048,
                             )
-                            code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
-                            if code_blocks:
-                                generated_code = code_blocks[-1].strip()
-                            else:
-                                # Fallback: if LLM returned raw code without fences, use it directly
-                                generated_code = _extract_code_from_reasoning(raw) or raw.strip()
-                                # Sanity-check: must contain at least one MATLAB statement
-                                if not generated_code or len(generated_code) < 10:
-                                    raise RuntimeError("LLM did not generate executable MATLAB code")
+                            generated_code = _extract_matlab_for_node(raw)
                             if generated_code:
                                 exec_output, _plots = await asyncio.to_thread(_run_matlab_and_collect, generated_code, task_text)
                                 _result = exec_output
@@ -2509,10 +2542,9 @@ async def run_nl_stream(req: RunRequest):
                             elif _node_intent == "visualization":
                                 _node_boost = _VISUALIZATION_BOOST
                             codegen_system = (
-                                agent_system
+                                "You are an expert MATLAB engineer writing self-contained scripts.\n"
                                 + _node_boost
-                                + "\n\nCRITICAL: Respond with ONLY a fenced MATLAB code block — no prose, "
-                                "no explanation before or after. The entire response must be:\n"
+                                + "\nRespond with ONLY a fenced MATLAB code block:\n"
                                 "```matlab\n% your code here\n```"
                             )
                             raw = await asyncio.to_thread(
@@ -2525,14 +2557,7 @@ async def run_nl_stream(req: RunRequest):
                                 base_url=getattr(settings.llm, "base_url", None),
                                 max_tokens=2048,
                             )
-                            code_blocks = re.findall(
-                                r"```(?:matlab)?\s*\n(.*?)```", raw,
-                                re.DOTALL | re.IGNORECASE,
-                            )
-                            generated_code = (
-                                code_blocks[-1].strip() if code_blocks
-                                else (_extract_code_from_reasoning(raw) or raw.strip())
-                            )
+                            generated_code = _extract_matlab_for_node(raw)
                             if generated_code and len(generated_code) >= 10:
                                 exec_output, node_plots = await asyncio.to_thread(
                                     _run_matlab_and_collect, generated_code, task_text
