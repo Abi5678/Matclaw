@@ -539,17 +539,19 @@ export default function PipelineCanvas() {
     const p = await getPipeline(id)
     setActivePipelineId(p.id || null)
     setPipelineName(p.name)
-    setNodes(p.nodes.map(n => ({
+    setNodes(p.nodes.map((n, idx) => ({
       id: n.id,
       type: 'agentNode',
-      position: n.position,
+      // Fall back to a horizontal grid layout when position is missing
+      // (e.g. pipelines created via the API without canvas coordinates)
+      position: n.position ?? { x: 80 + idx * 300, y: 200 },
       data: {
         nodeId: n.id,
         onDelete: (id: string) => deleteNodeRef.current(id),
         label: n.label,
         agentId: n.agent_id,
         tool: n.config.tool,
-        taskDescription: n.config.task_description,
+        taskDescription: n.config.task_description ?? (n.config as Record<string, unknown>).task as string ?? '',
         code: n.config.code || '',
         status: 'pending',
       },
