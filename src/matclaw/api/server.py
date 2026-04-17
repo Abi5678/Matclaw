@@ -1483,16 +1483,39 @@ async def run_pipeline_endpoint(pipeline_id: str):
                             _result = exec_output
                         elif node_tool == "run_matlab":
                             # Path B: LLM generates then executes
+                            # Inject quality boosts so the node LLM call gets the same
+                            # simulation/visualization guidance as the main chat path.
+                            intent = _classify_intent(task_text)
+                            node_boost = ""
+                            if intent == "simulation":
+                                node_boost = _SIMULATION_BOOST + _VISUALIZATION_BOOST
+                            elif intent == "visualization":
+                                node_boost = _VISUALIZATION_BOOST
+
+                            node_system = (
+                                agent_system
+                                + node_boost
+                                + "\n\nCRITICAL: Respond with ONLY a fenced MATLAB code block — no prose, "
+                                "no explanation before or after. The entire response must be:\n"
+                                "```matlab\n% your code here\n```"
+                            )
                             raw = await asyncio.to_thread(
                                 call_chat_completion,
                                 provider=settings.llm.provider,
                                 model=settings.llm.model,
-                                system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
+                                system=node_system,
                                 messages=[{"role": "user", "content": task_text}],
                                 api_key=settings.llm.api_key,
                             )
                             code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
-                            generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
+                            if code_blocks:
+                                generated_code = code_blocks[-1].strip()
+                            else:
+                                # Fallback: if LLM returned raw code without fences, use it directly
+                                generated_code = _extract_code_from_reasoning(raw) or raw.strip()
+                                # Sanity-check: must contain at least one MATLAB statement
+                                if not generated_code or len(generated_code) < 10:
+                                    raise RuntimeError("LLM did not generate executable MATLAB code")
                             if generated_code:
                                 exec_output, _plots = await asyncio.to_thread(_run_matlab_and_collect, generated_code, task_text)
                                 _result = exec_output
@@ -2479,11 +2502,18 @@ async def run_nl_stream(req: RunRequest):
 
                         # ── Path B: LLM generates MATLAB code, then execute ──
                         elif node_tool == "run_matlab":
+                            _node_intent = _classify_intent(task_text)
+                            _node_boost = ""
+                            if _node_intent == "simulation":
+                                _node_boost = _SIMULATION_BOOST + _VISUALIZATION_BOOST
+                            elif _node_intent == "visualization":
+                                _node_boost = _VISUALIZATION_BOOST
                             codegen_system = (
                                 agent_system
-                                + "\n\nRespond ONLY with a fenced MATLAB code block. "
-                                  "No prose before or after.\n"
-                                  "Example:\n```matlab\n% code here\n```"
+                                + _node_boost
+                                + "\n\nCRITICAL: Respond with ONLY a fenced MATLAB code block — no prose, "
+                                "no explanation before or after. The entire response must be:\n"
+                                "```matlab\n% your code here\n```"
                             )
                             raw = await asyncio.to_thread(
                                 call_chat_completion,
@@ -2493,7 +2523,7 @@ async def run_nl_stream(req: RunRequest):
                                 messages=[{"role": "user", "content": task_text}],
                                 api_key=settings.llm.api_key,
                                 base_url=getattr(settings.llm, "base_url", None),
-                                max_tokens=1024,
+                                max_tokens=2048,
                             )
                             code_blocks = re.findall(
                                 r"```(?:matlab)?\s*\n(.*?)```", raw,
@@ -2501,9 +2531,9 @@ async def run_nl_stream(req: RunRequest):
                             )
                             generated_code = (
                                 code_blocks[-1].strip() if code_blocks
-                                else _extract_code_from_reasoning(raw)
+                                else (_extract_code_from_reasoning(raw) or raw.strip())
                             )
-                            if generated_code:
+                            if generated_code and len(generated_code) >= 10:
                                 exec_output, node_plots = await asyncio.to_thread(
                                     _run_matlab_and_collect, generated_code, task_text
                                 )
