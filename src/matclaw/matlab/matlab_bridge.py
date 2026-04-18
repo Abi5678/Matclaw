@@ -156,7 +156,11 @@ class MatlabBridge:
                             os.environ["PATH"] = f"{os.path.dirname(bin_path)}:{old_path}"
                         
                         try:
-                            self._state.engine = matlab.engine.start_matlab("-nodesktop -nosplash")
+                            if getattr(self.settings, "show_figure_windows", False):
+                                # Allow desktop / figure windows (local pilot). Omit -nodesktop.
+                                self._state.engine = matlab.engine.start_matlab("-nosplash")
+                            else:
+                                self._state.engine = matlab.engine.start_matlab("-nodesktop -nosplash")
                         finally:
                             if bin_path:
                                 os.environ["PATH"] = old_path
@@ -218,6 +222,7 @@ class MatlabBridge:
             "has_engine": self._state.engine is not None,
             "needs_restart": self._state.needs_restart,
             "busy": self.is_busy(),
+            "show_figure_windows": bool(getattr(self.settings, "show_figure_windows", False)),
         }
 
     def is_busy(self) -> bool:

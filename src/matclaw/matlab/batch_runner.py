@@ -63,6 +63,7 @@ def run_batch(
     plots_dir: str,
     timeout: float = 240.0,
     plot_name: str | None = None,
+    hide_figure_windows: bool = True,
 ) -> tuple[bool, str, list[str]]:
     """
     Run MATLAB code in an isolated subprocess via `matlab -batch`.
@@ -85,7 +86,7 @@ def run_batch(
     plots: list[str] = []
 
     # Build the full script with headless figure save
-    full_code = _build_script(code, save_path)
+    full_code = _build_script(code, save_path, hide_figure_windows)
 
     with tempfile.NamedTemporaryFile(
         suffix=".m", delete=False, mode="w", encoding="utf-8", errors="replace"
@@ -152,8 +153,8 @@ def run_batch(
             pass
 
 
-def _build_script(code: str, save_path: str) -> str:
-    """Wrap user code with headless figure capture boilerplate."""
+def _build_script(code: str, save_path: str, hide_figure_windows: bool = True) -> str:
+    """Wrap user code with figure visibility + PNG capture boilerplate."""
     esc = save_path.replace("'", "''")
     main_body, local_fns = split_matlab_script_and_local_functions(code)
     footer = (
@@ -176,12 +177,20 @@ def _build_script(code: str, save_path: str) -> str:
         "end\n"
         "close all;\n"
     )
-    header = (
-        "% MatClaw batch execution — headless mode\n"
-        "set(0, 'DefaultFigureVisible', 'off');\n"
-        "set(0, 'DefaultFigureRenderer', 'painters');\n"
-        "\n"
-    )
+    if hide_figure_windows:
+        header = (
+            "% MatClaw batch execution — headless mode\n"
+            "set(0, 'DefaultFigureVisible', 'off');\n"
+            "set(0, 'DefaultFigureRenderer', 'painters');\n"
+            "\n"
+        )
+    else:
+        header = (
+            "% MatClaw batch — visible figures (matlab -batch may still suppress UI on some hosts)\n"
+            "set(0, 'DefaultFigureVisible', 'on');\n"
+            "set(0, 'DefaultFigureRenderer', 'painters');\n"
+            "\n"
+        )
     core = header + main_body + footer
     if local_fns:
         return core + "\n" + local_fns

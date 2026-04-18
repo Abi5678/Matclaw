@@ -65,7 +65,7 @@ r = r0 + gain * a;
 cseq = (1:N)' / N;
 
 step = max(3, floor(N / 220));
-set(0, 'DefaultFigureVisible', 'off');
+% Figure visibility is controlled by MatClaw (DefaultFigureVisible); do not force off here.
 fig = figure('Color', 'w', 'Position', [80 80 720 720]);
 ax = axes(fig, 'Color', 'w');
 colormap(ax, parula);

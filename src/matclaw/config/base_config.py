@@ -15,6 +15,14 @@ class MatlabSettings(BaseModel):
     enabled: bool = Field(default=True, description="Whether to start MATLAB engine.")
     startup_timeout_seconds: int = Field(default=60, description="MATLAB startup timeout.")
     session_name: Optional[str] = Field(default=None, description="Optional named MATLAB session.")
+    show_figure_windows: bool = Field(
+        default=False,
+        description=(
+            "If true, MATLAB figures are shown on screen (DefaultFigureVisible on; new engine starts "
+            "without -nodesktop). If false (default), figures are hidden and only PNG/GIF capture runs — "
+            "recommended for API servers. matlab -batch runs stay non-interactive."
+        ),
+    )
 
 
 class MemorySettings(BaseModel):

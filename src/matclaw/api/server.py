@@ -568,24 +568,27 @@ def _sentry_retry_code(original_request: str, original_code: str, issues: list[s
 # ── lifespan — starts/stops all background services ──────────────────────────
 async def _apply_matlab_headless_figures() -> None:
     """
-    Suppress figure windows for the server session. Runs **after** the HTTP server
-    is listening — a slow or stuck MATLAB eval must not block page load.
+    Set MATLAB default figure visibility for the engine session. Runs **after** the
+    HTTP server is listening — a slow or stuck MATLAB eval must not block page load.
     """
     try:
         if not bridge.is_healthy():
             return
         from matclaw.matlab.matlab_bridge import MatlabCallRequest
 
-        req = MatlabCallRequest(
-            function="eval",
-            args=["set(0, 'DefaultFigureVisible', 'off'); set(0, 'DefaultFigureWindowStyle', 'docked');"],
-            nargout=0,
-        )
+        if getattr(settings.matlab, "show_figure_windows", False):
+            cmd = "set(0, 'DefaultFigureVisible', 'on'); set(0, 'DefaultFigureWindowStyle', 'normal');"
+            log_msg = "MATLAB figure visibility: ON (show_figure_windows=true)"
+        else:
+            cmd = "set(0, 'DefaultFigureVisible', 'off'); set(0, 'DefaultFigureWindowStyle', 'docked');"
+            log_msg = "MATLAB figure visibility: OFF (headless mode; set MATCLAW_MATLAB__SHOW_FIGURE_WINDOWS=true for windows)"
+
+        req = MatlabCallRequest(function="eval", args=[cmd], nargout=0)
         await asyncio.wait_for(
             asyncio.to_thread(bridge.call, req),
             timeout=120.0,
         )
-        logger.info("MATLAB figure visibility: OFF (headless mode active)")
+        logger.info(log_msg)
     except asyncio.TimeoutError:
         logger.warning("Headless MATLAB figure setup timed out after 120s; UI and API remain available.")
     except Exception as _fig_e:
@@ -1062,6 +1065,7 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
                 plots_dir=str(PLOTS_DIR),
                 timeout=240.0,   # 4 min — kills subprocess only, never the engine
                 plot_name=plot_name,
+                hide_figure_windows=not getattr(settings.matlab, "show_figure_windows", False),
             )
         plots.extend(batch_plots)
         if not ok:
@@ -1080,6 +1084,7 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
                 plots_dir=str(PLOTS_DIR),
                 timeout=240.0,
                 plot_name=plot_name,
+                hide_figure_windows=not getattr(settings.matlab, "show_figure_windows", False),
             )
         plots.extend(batch_plots)
         if not ok:
@@ -1132,8 +1137,9 @@ def _run_matlab_and_collect(code: str, req_text: str) -> tuple[str, list[str]]:
     # Wrap main body in try/catch so the saveas footer ALWAYS runs even when
     # the user code errors mid-way (e.g. undefined variable, wrong dimension).
     # Any figure drawn before the error will still be captured.
+    _fig_vis = "on" if getattr(settings.matlab, "show_figure_windows", False) else "off"
     wrapped_code = (
-        "set(0, 'DefaultFigureVisible', 'off');\n"
+        f"set(0, 'DefaultFigureVisible', '{_fig_vis}');\n"
         "matclaw_user_error = '';\n"
         "try\n"
         + main_body + "\n"
