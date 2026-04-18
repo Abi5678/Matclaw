@@ -118,7 +118,25 @@ Useful endpoints:
 
 ---
 
+## Pilot launch (native)
+
+For a clean pilot on macOS or Linux:
+
+1. **Install** (creates `.venv`, installs Python package, builds `web/dist`, copies `.env` if missing):
+   ```bash
+   chmod +x install.sh && ./install.sh
+   ```
+2. **Configure** `.env`: set `MATCLAW_LLM__PROVIDER`, `MATCLAW_LLM__MODEL`, and your provider key. For OpenAI-compatible endpoints (Ollama, vLLM, etc.), set `MATCLAW_LLM__BASE_URL` (see `.env.example`).
+3. **Run** the Control Plane API + UI:
+   ```bash
+   ./start.sh
+   ```
+   Open `http://localhost:8000` (browser opens automatically unless you set `MATCLAW_OPEN_BROWSER=false`).
+
+Runtime state files (Chroma, SQLite, async tracker, model picker DB) stay on disk under the repo and are listed in `.gitignore` so pilots do not commit local session data.
+
+---
+
 ## Status
 
-🚀 FastAPI Control Plane + agentic loop, MATLAB bridge hardening, Code Doctor retries, Chroma-backed memory injection, and execution quality telemetry are live in the current branch.  
-🧪 Test suite includes backend API/core coverage and frontend build checks; live MATLAB + provider-key golden eval is intended for scheduled/self-hosted CI.
+🚀 FastAPI Control Plane + agentic loop, MATLAB bridge hardening, Code Doctor retries, Chroma-backed memory injection, and execution quality telemetry are in this tree for pilot deployments.

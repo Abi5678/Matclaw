@@ -356,7 +356,8 @@ def _llm_chat(user_text: str, system: str = MATCLAW_PERSONA,
             model=settings.llm.model,
             system=sys_arg,
             messages=messages,
-            api_key=None,
+            api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
             max_tokens=max_tokens,
         )
         return result or ""
@@ -1345,7 +1346,9 @@ async def smart_generate(req: SmartGenRequest):
             provider=settings.llm.provider,
             model=settings.llm.model,
             system=system,
-            messages=[{"role": "user", "content": user_msg}]
+            messages=[{"role": "user", "content": user_msg}],
+            api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
         )
 
     try:
@@ -1409,6 +1412,7 @@ async def optimize_prompt(req: OptimizePromptReq):
             system=system,
             messages=[{"role": "user", "content": req.prompt}],
             api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
         )
     try:
         result = await asyncio.to_thread(_call)
@@ -1726,6 +1730,7 @@ def _activate_runtime(m: ModelConfig):
     settings.llm.provider = m.provider
     settings.llm.model = m.model
     settings.llm.api_key = m.api_key
+    settings.llm.base_url = m.base_url
 
 @app.get("/api/settings/active-model")
 def get_active_model():
@@ -2182,7 +2187,8 @@ async def run_nl_stream(req: RunRequest):
                     model=settings.llm.model,
                     system=sys_arg,
                     messages=messages,
-                    api_key=None,
+                    api_key=settings.llm.api_key,
+                    base_url=getattr(settings.llm, "base_url", None),
                     max_tokens=8192,
                 ):
                     if chunk["type"] == "thinking":

@@ -1,8 +1,8 @@
 """
 MatClaw server entry point.
 Run with:  matclaw-server
-       or: python -m src.matclaw.api.main
-       or: uvicorn src.matclaw.api.server:app --host 0.0.0.0 --port 8000
+       or: python -m matclaw.api.main
+       or: uvicorn matclaw.api.server:app --host 0.0.0.0 --port 8000
 """
 from __future__ import annotations
 

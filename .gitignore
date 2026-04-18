@@ -2,6 +2,12 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.pyc
+.DS_Store
+
+# Local runtime / IDE state (never ship in git for pilots)
+*.pid
+.matclaw_async_state.json
+.matclaw_models.json
 
 *.mat
 *.dat

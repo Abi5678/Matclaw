@@ -145,6 +145,10 @@ class LLMSettings(BaseModel):
         default="nvidia/nvidia-nemotron-nano-9b-v2",
         description="Model name (e.g. nvidia/nvidia-nemotron-nano-9b-v2, gemini-2.0-flash).",
     )
+    base_url: Optional[str] = Field(
+        default=None,
+        description="Base URL for openai-compatible providers (e.g. http://localhost:11434/v1).",
+    )
 
 
 class VisionSettings(BaseModel):

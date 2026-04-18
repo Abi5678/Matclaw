@@ -541,7 +541,7 @@ export default function ControlPlane() {
   }, [])
 
   // ── active model + model list ────────────────────────────────
-  const [activeModelLabel, setActiveModelLabel] = useState('NVIDIA Nemotron Ultra 253B')
+  const [activeModelLabel, setActiveModelLabel] = useState('Loading...')
   const [modelList, setModelList] = useState<{id:string, label:string, active:boolean}[]>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
   const modelPickerRef = useRef<HTMLDivElement>(null)
@@ -1499,7 +1499,7 @@ export default function ControlPlane() {
                   {/* Model picker */}
                   <div className="relative" ref={modelPickerRef}>
                     <button
-                      onClick={() => setShowModelPicker(p => !p)}
+                      onClick={() => { setShowModelPicker(p => !p); fetchModels() }}
                       className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition whitespace-nowrap"
                       style={{ color: 'var(--text-secondary)' }}
                       onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--bg-hover)')}

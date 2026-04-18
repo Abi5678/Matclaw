@@ -551,7 +551,7 @@ export default function PipelineCanvas() {
         label: n.label,
         agentId: n.agent_id,
         tool: n.config.tool,
-        taskDescription: n.config.task_description ?? (n.config as Record<string, unknown>).task as string ?? '',
+        taskDescription: n.config.task_description ?? (n.config as unknown as Record<string, unknown>).task as string ?? '',
         code: n.config.code || '',
         status: 'pending',
       },

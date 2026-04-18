@@ -42,16 +42,6 @@ matclaw-mcp = "matclaw.mcp.server:main"
 matclaw-server = "matclaw.api.main:main"
 matclaw = "matclaw.cli.main:main"
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-asyncio",
-]
-
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
 

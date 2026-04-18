@@ -88,7 +88,6 @@ export function useStreaming() {
       callbacks.onError('Request timed out after 5 minutes. The simulation may be too complex — try simplifying.')
     }, 300_000)
 
-    let receivedDone = false
     let receivedServerEvent = false  // any SSE event received = stream was established
     try {
       const body: Record<string, unknown> = {
@@ -117,7 +116,6 @@ export function useStreaming() {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      // receivedDone declared above try block so catch can read it
 
       while (true) {
         const { done, value } = await reader.read()
@@ -143,7 +141,7 @@ export function useStreaming() {
                 case 'text': receivedServerEvent = true; callbacks.onText(data.token); break
                 case 'tool_start': receivedServerEvent = true; callbacks.onToolStart(data); break
                 case 'tool_result': receivedServerEvent = true; callbacks.onToolResult(data); break
-                case 'done': receivedDone = true; receivedServerEvent = true; callbacks.onDone(data); break
+                case 'done': receivedServerEvent = true; callbacks.onDone(data); break
                 case 'error': receivedServerEvent = true; callbacks.onError(data.message); break
                 case 'sentry_start':
                   callbacks.onSentryUpdate?.({ type: 'start', message: data.message }); break
@@ -203,7 +201,7 @@ export function useStreaming() {
           } else if (line.startsWith('data: ') && currentEvent) {
             try {
               const data = JSON.parse(line.slice(6))
-              if (currentEvent === 'done') { receivedDone = true; callbacks.onDone(data) }
+              if (currentEvent === 'done') { callbacks.onDone(data) }
               else if (currentEvent === 'error') { callbacks.onError(data.message) }
             } catch { /* skip */ }
             currentEvent = ''

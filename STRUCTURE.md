@@ -164,11 +164,6 @@ matclaw/
   │   ├─ install_matlab_engine.sh
   │   └─ migrate_memory_schema.py
   │
-  ├─ tests/
-  │   ├─ unit/
-  │   ├─ integration/
-  │   └─ e2e/
-  │
   ├─ .env.example
   ├─ pyproject.toml or requirements.txt
   ├─ README.md

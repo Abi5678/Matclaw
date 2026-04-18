@@ -218,6 +218,8 @@ async def run_agentic_loop(
     max_tok  = getattr(settings.agentic, "max_tokens_per_step", 4096)
     provider = settings.llm.provider
     model    = settings.llm.model
+    api_key  = settings.llm.api_key
+    base_url = getattr(settings.llm, "base_url", None)
 
     tools_schema = _build_tool_schema(tool_registry)
 
@@ -263,7 +265,8 @@ async def run_agentic_loop(
             system=AGENTIC_SYSTEM,
             messages=messages,
             tools=tools_schema,
-            api_key=None,
+            api_key=api_key,
+            base_url=base_url,
             max_tokens=max_tok,
         )
 
@@ -449,7 +452,8 @@ async def run_agentic_loop(
                 system=AGENTIC_SYSTEM,
                 messages=messages,
                 tools=[],          # no tools — just prose
-                api_key=None,
+                api_key=api_key,
+                base_url=base_url,
                 max_tokens=1024,
             )
             _add_usage(summary_resp.get("usage"))
