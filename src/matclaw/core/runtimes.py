@@ -203,13 +203,14 @@ class PythonRuntime(BaseRuntime):
                         plots.sort()
                     except OSError:
                         logger.debug("Python runtime: could not scan plots_dir", exc_info=True)
+            err_tail = (result.stderr or "").strip() or (result.stdout or "").strip()[-800:]
             return RuntimeResult(
                 success=result.returncode == 0,
                 output=output,
                 plots=plots,
                 elapsed_ms=elapsed,
                 runtime=self.name,
-                error="" if result.returncode == 0 else f"Exit {result.returncode}: {result.stderr[:300]}",
+                error="" if result.returncode == 0 else f"Exit {result.returncode}: {err_tail}",
             )
         except subprocess.TimeoutExpired:
             return RuntimeResult(

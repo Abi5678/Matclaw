@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, AsyncGenerator, Callable
 
 from matclaw.core.spec_compliance import analyze_matlab_run
@@ -38,6 +39,11 @@ RULES:
 - For MATLAB computations, plotting, or simulations: use run_matlab with complete, self-contained code
 - For data processing or parsing: use run_python
 - For interactive charts (hover/zoom) from fetched data: use run_python with Plotly and fig.write_html under the plots/ folder (e.g. plots/heatmap.html) — MatClaw surfaces /plots/... URLs in the UI
+
+MANDATORY TOOL USE — Python, web/API data, or charts:
+- If the user wants a chart, heatmap, plot, dashboard, or numbers from the web/API/CSV, you MUST invoke a tool on the first applicable turn (usually run_python with full executable code, or web_fetch then run_python). Never reply with only placeholders, bracket templates like [[t1,...,t30]], pseudocode, or prose that skips tools — that is incorrect behavior.
+- run_python code must be complete: perform the HTTP request (urllib or requests), parse JSON/CSV, build the figure (Plotly/Matplotlib), and for interactivity save with Plotly to plots/*.html.
+- Open-Meteo archive/forecast APIs require query parameters **latitude** and **longitude** (floats), never a single "location" parameter. Example path: `.../v1/archive?latitude=40.71&longitude=-74.01&start_date=...&daily=temperature_2m_max&timezone=America%2FNew_York`.
 - For system tasks or file listing: use run_shell
 - For fetching data from a URL: use web_fetch
 - For reading or writing local files: use file_ops
@@ -95,7 +101,8 @@ _RUNTIME_TOOL_SCHEMAS: list[dict] = [
             "name": "run_python",
             "description": (
                 "Execute Python code. Use for data wrangling, CSV/JSON parsing, "
-                "mathematical preprocessing, or tasks where Python is more appropriate."
+                "HTTP APIs (urllib), Plotly/Matplotlib, and writing interactive HTML to plots/*.html. "
+                "For Open-Meteo use latitude= & longitude= in the URL."
             ),
             "parameters": {
                 "type": "object",
@@ -373,6 +380,10 @@ async def run_agentic_loop(
                     if tc_output and any(
                         marker in tc_output
                         for marker in ("MATLAB error:", "execution failed", "Tool error:", "Traceback (most recent", "Error:", "Execution error:")
+                    ):
+                        tc_success = False
+                    if tool_name in ("run_python", "run_shell") and tc_output and re.match(
+                        r"^Exit\s+[1-9]\d*\s*:", tc_output.strip()
                     ):
                         tc_success = False
             except asyncio.TimeoutError:
