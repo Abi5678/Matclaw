@@ -12,6 +12,7 @@ import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -146,10 +147,17 @@ _PYTHON_DENY = [
 class PythonRuntime(BaseRuntime):
     name = "python"
 
-    def __init__(self, cwd: str, timeout: int = 30, venv_python: str | None = None):
+    def __init__(
+        self,
+        cwd: str,
+        timeout: int = 120,
+        venv_python: str | None = None,
+        plots_dir: str | None = None,
+    ):
         self._cwd = cwd
         self._timeout = timeout
         self._python = venv_python or sys.executable
+        self._plots_dir = plots_dir
 
     def is_available(self) -> bool:
         return True
@@ -163,6 +171,7 @@ class PythonRuntime(BaseRuntime):
                     error="Python guardrail blocked dangerous pattern"
                 )
         t0 = time.monotonic()
+        wall_start = time.time()
         tmp = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -178,9 +187,26 @@ class PythonRuntime(BaseRuntime):
             )
             elapsed = int((time.monotonic() - t0) * 1000)
             output = (result.stdout + result.stderr).strip() or "(no output)"
+            plots: list[str] = []
+            if self._plots_dir and result.returncode == 0:
+                pdir = Path(self._plots_dir)
+                if pdir.is_dir():
+                    exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".html", ".svg"}
+                    try:
+                        for fpath in pdir.iterdir():
+                            if not fpath.is_file():
+                                continue
+                            if fpath.suffix.lower() not in exts:
+                                continue
+                            if fpath.stat().st_mtime >= wall_start - 1.0:
+                                plots.append(f"/plots/{fpath.name}")
+                        plots.sort()
+                    except OSError:
+                        logger.debug("Python runtime: could not scan plots_dir", exc_info=True)
             return RuntimeResult(
                 success=result.returncode == 0,
                 output=output,
+                plots=plots,
                 elapsed_ms=elapsed,
                 runtime=self.name,
                 error="" if result.returncode == 0 else f"Exit {result.returncode}: {result.stderr[:300]}",

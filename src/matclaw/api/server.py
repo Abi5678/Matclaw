@@ -616,7 +616,11 @@ async def lifespan(app: FastAPI):
 
     # Register runtimes now that bridge is live
     _runtime_registry.register(MatlabRuntime(bridge, _run_matlab_and_collect))
-    _runtime_registry.register(PythonRuntime(cwd=str(ROOT), venv_python=sys.executable))
+    _runtime_registry.register(PythonRuntime(
+        cwd=str(ROOT),
+        venv_python=sys.executable,
+        plots_dir=str(PLOTS_DIR),
+    ))
     _runtime_registry.register(ShellRuntime(cwd=str(ROOT)))
     # Auto-discover pluggable tools
     tool_registry.discover()

@@ -56,6 +56,7 @@ function SkillBadge({ skill }: { skill: string }) {
 
 function PlotCard({ url }: { url: string }) {
   const isGif = url.endsWith('.gif')
+  const isHtml = url.endsWith('.html')
   return (
     <div
       className="mt-2 rounded-lg overflow-hidden max-w-md"
@@ -70,15 +71,25 @@ function PlotCard({ url }: { url: string }) {
       >
         <Eye className="w-3 h-3" style={{ color: 'var(--accent)' }} />
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          {isGif ? '\u25B6 Animated' : '\uD83D\uDCCA Plot'}
+          {isHtml ? 'Interactive (HTML)' : isGif ? '\u25B6 Animated' : '\uD83D\uDCCA Plot'}
         </span>
       </div>
-      <img
-        src={`${API}${url}`}
-        alt="MATLAB output"
-        className="w-full object-contain max-h-72"
-        onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
-      />
+      {isHtml ? (
+        <iframe
+          title="Interactive plot"
+          src={`${API}${url}`}
+          className="w-full border-0 bg-white"
+          style={{ height: '22rem', minHeight: '280px' }}
+          sandbox="allow-scripts allow-same-origin"
+        />
+      ) : (
+        <img
+          src={`${API}${url}`}
+          alt="Run output"
+          className="w-full object-contain max-h-72"
+          onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+        />
+      )}
     </div>
   )
 }

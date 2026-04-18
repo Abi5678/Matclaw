@@ -37,6 +37,7 @@ RULES:
 - Call tools one at a time — think before each call
 - For MATLAB computations, plotting, or simulations: use run_matlab with complete, self-contained code
 - For data processing or parsing: use run_python
+- For interactive charts (hover/zoom) from fetched data: use run_python with Plotly and fig.write_html under the plots/ folder (e.g. plots/heatmap.html) — MatClaw surfaces /plots/... URLs in the UI
 - For system tasks or file listing: use run_shell
 - For fetching data from a URL: use web_fetch
 - For reading or writing local files: use file_ops
