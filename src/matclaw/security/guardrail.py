@@ -31,8 +31,8 @@ _DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(^|[^A-Za-z0-9_])(!\s*|system\s*\(|dos\s*\(|unix\s*\()", re.IGNORECASE),
     # Destructive filesystem ops (copyfile is intentionally excluded — benign)
     re.compile(r"\b(delete|rmdir|movefile|removefile)\b", re.IGNORECASE),
-    # Network / external I/O (keep strict)
-    re.compile(r"\b(webread|webwrite|urlread|urlwrite|ftp|http)\b", re.IGNORECASE),
+    # Network writes and non-HTTP protocols (read-only webread is allowed for public APIs)
+    re.compile(r"\b(webwrite|urlwrite|ftp)\b", re.IGNORECASE),
     # Code injection patterns
     re.compile(r"\beval\s*\(", re.IGNORECASE),
     # Privileged operations often used in escapes
@@ -48,7 +48,7 @@ _BLOCKED_FUNCTIONS: frozenset[str] = frozenset({
     "system", "dos", "unix", "perl", "python",
     "delete", "rmdir", "movefile", "removefile",
     "builtin", "str2func", "loadobj",
-    "webread", "webwrite", "urlread", "urlwrite",
+    "webwrite", "urlwrite",
 })
 
 # Lifecycle functions that bypass the guardrail (engine management only).

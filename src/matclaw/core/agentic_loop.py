@@ -37,15 +37,18 @@ You are running in AGENTIC MODE. Use the provided tools to complete tasks step b
 RULES:
 - Call tools one at a time — think before each call
 - For MATLAB computations, plotting, or simulations: use run_matlab with complete, self-contained code
+- If the user asks for MATLAB (or .m) specifically: use **run_matlab**, not run_python. Fetch JSON via `webread(url, weboptions('ContentType','json'))` from public HTTPS APIs (e.g. Open-Meteo `archive-api.open-meteo.com` with **latitude** and **longitude** query params). Build `heatmap` or `imagesc`, then `drawnow` — MatClaw captures the figure as PNG under `/plots/`. (PNG hover is limited vs HTML; use MATLAB datacursor or accept static export.)
 - For data processing or parsing: use run_python
 - For interactive charts (hover/zoom) from fetched data: use run_python with Plotly and fig.write_html under the plots/ folder (e.g. plots/heatmap.html) — MatClaw surfaces /plots/... URLs in the UI
 
-MANDATORY TOOL USE — Python, web/API data, or charts:
-- If the user wants a chart, heatmap, plot, dashboard, or numbers from the web/API/CSV, you MUST invoke a tool on the first applicable turn (usually run_python with full executable code, or web_fetch then run_python). Never reply with only placeholders, bracket templates like [[t1,...,t30]], pseudocode, or prose that skips tools — that is incorrect behavior.
-- run_python code must be complete: perform the HTTP request (urllib or requests), parse JSON/CSV, build the figure (Plotly/Matplotlib), and for interactivity save with Plotly to plots/*.html.
-- Open-Meteo archive/forecast APIs require query parameters **latitude** and **longitude** (floats), never a single "location" parameter. Example path: `.../v1/archive?latitude=40.71&longitude=-74.01&start_date=...&daily=temperature_2m_max&timezone=America%2FNew_York`.
+MANDATORY TOOL USE — charts / web data:
+- If the user wants a chart, heatmap, or numbers from the web/API, you MUST call a tool on the first applicable turn. If they ask for **MATLAB**, use **run_matlab** (webread + plot); otherwise use **run_python** (or web_fetch then run_python). Never reply with only placeholders or pseudocode.
+- run_python must perform HTTP (urllib/requests), parse data, and save interactive HTML with Plotly under plots/ when required.
+- run_matlab must use **webread** for HTTPS JSON, then plot; figures are captured as PNG.
+- Open-Meteo URLs need **latitude** and **longitude**, not a single "location" parameter.
+
 - For system tasks or file listing: use run_shell
-- For fetching data from a URL: use web_fetch
+- For fetching raw URL text: use web_fetch
 - For reading or writing local files: use file_ops
 - After each tool result, evaluate what to do next
 - When the task is fully complete, provide a clear natural-language summary
@@ -80,8 +83,8 @@ _RUNTIME_TOOL_SCHEMAS: list[dict] = [
             "description": (
                 "Execute MATLAB code in the live MATLAB workspace. "
                 "Use for numerical computation, signal processing, control systems, "
-                "simulations, and plotting. Returns stdout/stderr and any plot URLs. "
-                "Always write complete, self-contained code."
+                "simulations, and plotting. For HTTP JSON APIs use webread(..., weboptions('ContentType','json')). "
+                "Returns stdout/stderr and any plot URLs. Always write complete, self-contained code."
             ),
             "parameters": {
                 "type": "object",
