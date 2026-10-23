@@ -156,6 +156,51 @@ class VisionSettings(BaseModel):
     model: str = Field(default="gemini-2.0-flash", description="Model name for vision (NVIDIA VLMs use different model IDs).")
 
 
+class GB10NodeSettings(BaseModel):
+    """One node in a GB10 (DGX Spark) cluster."""
+
+    ssh_alias: str = Field(description="SSH alias or hostname (e.g. 'gn100-93da').")
+    ssh_user: str = Field(default="ubuntu", description="SSH user.")
+    ssh_port: int = Field(default=22, description="SSH port.")
+    interconnect_ip: Optional[str] = Field(
+        default=None,
+        description="Direct-link IP for inter-node MPI/NCCL traffic (e.g. 10.100.121.1).",
+    )
+    management_ip: Optional[str] = Field(
+        default=None,
+        description="Management-network IP (e.g. 10.100.120.1).",
+    )
+
+
+class GB10Settings(BaseModel):
+    """NVIDIA GB10 (DGX Spark) remote compute backend — single-node or multi-node cluster."""
+
+    enabled: bool = Field(default=False, description="Whether the GB10 backend is available.")
+    cluster_name: str = Field(default="gb10", description="Friendly name for the cluster (e.g. 'constellation').")
+    nodes: list[GB10NodeSettings] = Field(
+        default_factory=list,
+        description="Ordered list of GB10 nodes. First node is the primary / head node.",
+    )
+    ssh_key_path: Optional[str] = Field(default=None, description="Path to SSH private key (or use ssh-agent).")
+    remote_work_dir: str = Field(
+        default="/tmp/matclaw_jobs",
+        description="Working directory on each GB10 node for build/run artifacts.",
+    )
+    cuda_home: str = Field(default="/usr/local/cuda", description="CUDA installation root on the GB10 nodes.")
+    nvcc_path: str = Field(default="nvcc", description="Path to nvcc on the GB10 (or just 'nvcc' if in PATH).")
+    octave_path: str = Field(default="octave", description="Path to GNU Octave binary on the GB10 (CPU fallback).")
+    gpu_coder_enabled: bool = Field(
+        default=False,
+        description="Whether MATLAB GPU Coder is available on the host for CUDA code generation.",
+    )
+    timeout_seconds: float = Field(default=600.0, description="Default timeout for remote jobs (seconds).")
+    max_retries: int = Field(default=2, description="Max SSH connection retries on transient failure.")
+    multi_node_strategy: str = Field(
+        default="split",
+        description="How to use multiple nodes: 'split' (divide work), 'mpi' (MPI across nodes), 'single' (head node only).",
+    )
+
+
 class SyncSettings(BaseModel):
     enabled: bool = Field(default=False)
     mode: str = Field(default="rsync")
@@ -235,6 +280,7 @@ class MatClawSettings(BaseSettings):
     vision: VisionSettings = Field(default_factory=VisionSettings)
     file_doctor: FileDoctorSettings = Field(default_factory=FileDoctorSettings)
     long_term_memory: LongTermMemorySettings = Field(default_factory=LongTermMemorySettings)
+    gb10: GB10Settings = Field(default_factory=GB10Settings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
     agentic: AgenticSettings = Field(default_factory=AgenticSettings)
     production: ProductionSettings = Field(default_factory=ProductionSettings)

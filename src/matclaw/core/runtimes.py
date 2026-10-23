@@ -200,6 +200,89 @@ class PythonRuntime(BaseRuntime):
                     pass
 
 
+# ── GB10 Runtime ──────────────────────────────────────────────────────────────
+
+
+class GB10Runtime(BaseRuntime):
+    """
+    Remote execution on a GB10 (DGX Spark) cluster.
+
+    Dispatches code to the GB10 over SSH.  Supports three execution strategies:
+
+    - **cuda**: compile & run CUDA/C code produced by GPU Coder
+    - **octave**: run .m scripts via GNU Octave on the GB10 CPU
+    - **binary**: run a pre-compiled binary or shell command
+
+    The ``mode`` is chosen per-call via ``context["gb10_mode"]`` and defaults
+    to ``"octave"`` for .m code.
+    """
+
+    name = "gb10"
+
+    def __init__(self, gb10_client: Any) -> None:
+        self._client = gb10_client
+
+    def is_available(self) -> bool:
+        if self._client is None:
+            return False
+        try:
+            result = self._client.probe_node(self._client.head_node)
+            return result.success
+        except Exception:
+            return False
+
+    def execute(self, code: str, context: dict[str, Any] | None = None) -> RuntimeResult:
+        ctx = context or {}
+        mode = ctx.get("gb10_mode", "octave")
+        timeout = ctx.get("timeout")
+        t0 = time.monotonic()
+
+        try:
+            if mode == "octave":
+                from src.matclaw.gb10.octave_fallback import run_octave_on_node
+
+                ok, output, artifacts = run_octave_on_node(
+                    self._client,
+                    self._client.head_node,
+                    code,
+                    timeout=timeout,
+                )
+            elif mode == "binary":
+                result = self._client.run_on_head(code, timeout=timeout)
+                ok = result.success
+                output = result.stdout or result.stderr
+                artifacts = result.artifacts
+            else:
+                ok = False
+                output = ""
+                artifacts = []
+                return RuntimeResult(
+                    success=False,
+                    output="",
+                    runtime=self.name,
+                    error=f"Unknown GB10 mode: {mode}. Use 'octave' or 'binary'.",
+                )
+
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return RuntimeResult(
+                success=ok,
+                output=output,
+                plots=artifacts,
+                elapsed_ms=elapsed,
+                runtime=self.name,
+                error="" if ok else output,
+            )
+        except Exception as exc:
+            elapsed = int((time.monotonic() - t0) * 1000)
+            return RuntimeResult(
+                success=False,
+                output="",
+                elapsed_ms=elapsed,
+                runtime=self.name,
+                error=str(exc),
+            )
+
+
 # ── Runtime Registry ──────────────────────────────────────────────────────────
 
 class RuntimeRegistry:
@@ -238,5 +321,5 @@ class RuntimeRegistry:
 
 __all__ = [
     "RuntimeResult", "BaseRuntime", "RuntimeRegistry",
-    "MatlabRuntime", "ShellRuntime", "PythonRuntime",
+    "MatlabRuntime", "ShellRuntime", "PythonRuntime", "GB10Runtime",
 ]
