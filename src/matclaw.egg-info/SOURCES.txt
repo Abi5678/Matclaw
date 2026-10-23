@@ -35,6 +35,7 @@ src/matclaw/core/pipeline_store.py
 src/matclaw/core/rpi_executor.py
 src/matclaw/core/runtimes.py
 src/matclaw/core/scheduler.py
+src/matclaw/core/spec_compliance.py
 src/matclaw/core/state_manager.py
 src/matclaw/core/static_analyzer.py
 src/matclaw/core/task_router.py
@@ -46,6 +47,7 @@ src/matclaw/gateways/telegram_handler.py
 src/matclaw/gateways/voice_client.py
 src/matclaw/gateways/voice_listener.py
 src/matclaw/gateways/webhook.py
+src/matclaw/gb10/__init__.py
 src/matclaw/llm/__init__.py
 src/matclaw/llm/context_loader.py
 src/matclaw/llm/llm_client.py

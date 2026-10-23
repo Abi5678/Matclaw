@@ -97,10 +97,164 @@ The workflow (`workflows/nat_matclaw_mcp.yml`) connects NAT to MatClaw's MCP too
 
 ---
 
+---
+
+## GB10 (DGX Spark) Remote Compute Backend
+
+MatClaw can offload heavy simulations to an NVIDIA GB10 / DGX Spark cluster
+while MATLAB stays on your Mac or x86 host. MATLAB has **no Linux ARM64 build**,
+so it cannot run on the GB10 itself — but MatClaw bridges the gap with three
+execution paths:
+
+| Path | What runs on the GB10 | Requires on the host |
+|------|----------------------|---------------------|
+| **GPU Coder** | CUDA kernels compiled from MATLAB functions | MATLAB + GPU Coder toolbox |
+| **Octave** | Plain `.m` scripts on the Grace CPU cores | GNU Octave on the GB10 |
+| **Binary** | Pre-compiled CUDA/C++ on the Blackwell GPU | Source code + nvcc on GB10 |
+
+### Cluster Setup — "Constellation" (2-node example)
+
+The reference cluster has two GB10 nodes connected with a direct link:
+
+| Node | SSH alias | Management IP | Interconnect IP |
+|------|-----------|--------------|-----------------|
+| 1 (head) | `gn100-93da` | 10.100.120.1 (enp1s0f1np1) | 10.100.121.1 (enP2p1s0f1np1) |
+| 2 | `spark-3d03.local` | 10.100.120.2 (enp1s0f0np0) | 10.100.121.2 (enP2p1s0f0np0) |
+
+**1. SSH config** — add aliases to `~/.ssh/config` on your Mac/host:
+
+```
+Host gn100-93da
+    HostName 10.100.120.1
+    User ubuntu
+    IdentityFile ~/.ssh/id_ed25519
+
+Host spark-3d03.local
+    HostName 10.100.120.2
+    User ubuntu
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+**2. MatClaw `.env`** — enable the GB10 backend:
+
+```bash
+MATCLAW_GB10__ENABLED=true
+MATCLAW_GB10__CLUSTER_NAME=constellation
+MATCLAW_GB10__NODES='[{"ssh_alias":"gn100-93da","ssh_user":"ubuntu","interconnect_ip":"10.100.121.1","management_ip":"10.100.120.1"},{"ssh_alias":"spark-3d03.local","ssh_user":"ubuntu","interconnect_ip":"10.100.121.2","management_ip":"10.100.120.2"}]'
+MATCLAW_GB10__SSH_KEY_PATH=~/.ssh/id_ed25519
+MATCLAW_GB10__CUDA_HOME=/usr/local/cuda
+MATCLAW_GB10__MULTI_NODE_STRATEGY=split
+```
+
+**3. GB10 prerequisites** — on each node, install:
+
+```bash
+# GNU Octave (for .m script fallback)
+sudo apt-get install -y octave
+
+# CUDA 13 should already be present on DGX Spark
+nvcc --version
+```
+
+### Multi-Node Strategies
+
+- **`split`** — divide work items (Monte Carlo batches, parameter sweeps) evenly
+  across nodes and run in parallel. Results are gathered back to the host.
+- **`mpi`** — launch MPI jobs across both nodes using the direct-link interconnect
+  IPs (10.100.121.x) for NCCL/MPI traffic.
+- **`single`** — run everything on the head node only.
+
+### End-to-End Example: Monte Carlo π Estimation
+
+This example splits 1,000,000 samples across both GB10 nodes via Octave:
+
+```python
+from src.matclaw.skills.gb10_offload.logic import run
+from src.matclaw.config.base_config import GB10Settings, GB10NodeSettings
+
+settings = GB10Settings(
+    enabled=True,
+    cluster_name="constellation",
+    nodes=[
+        GB10NodeSettings(
+            ssh_alias="gn100-93da",
+            ssh_user="ubuntu",
+            interconnect_ip="10.100.121.1",
+            management_ip="10.100.120.1",
+        ),
+        GB10NodeSettings(
+            ssh_alias="spark-3d03.local",
+            ssh_user="ubuntu",
+            interconnect_ip="10.100.121.2",
+            management_ip="10.100.120.2",
+        ),
+    ],
+)
+
+result = run(
+    matlab_bridge=None,  # MATLAB not needed for Octave path
+    code="""
+        N = 500000;
+        x = rand(N,1); y = rand(N,1);
+        inside = sum(x.^2 + y.^2 <= 1);
+        pi_est = 4 * inside / N;
+        fprintf('pi ≈ %f (N=%d)\\n', pi_est, N);
+    """,
+    mode="octave",
+    work_items=[{"seed": 1}, {"seed": 2}],  # one chunk per node
+    multi_node=True,
+    gb10_settings=settings,
+)
+print(result.message)
+```
+
+### End-to-End Example: GPU Coder ODE Solver
+
+If you have MATLAB with GPU Coder on your Mac, MatClaw can generate CUDA from
+a MATLAB function, compile it on the GB10's Blackwell GPU, and run it:
+
+```python
+from src.matclaw.skills.gb10_offload.logic import run
+
+result = run(
+    matlab_bridge=my_bridge,          # live MATLAB on Mac
+    mode="gpu_coder",
+    function_name="ode_rk4_step",     # your coder-compatible .m function
+    entry_types="{zeros(1000,1), 0.01}",
+    source_dir="matlab/solvers/",
+    gb10_settings=settings,
+)
+```
+
+### Graceful Fallback
+
+- **No GPU Coder?** → falls back to Octave on the GB10 CPU.
+- **GB10 unreachable?** → the skill returns an error; MATLAB on the host still works.
+- **Single node only?** → set `multi_node=False` or configure only one node.
+
+### MCP Tool
+
+The agent can call `gb10_offload` as an MCP tool:
+
+```json
+{
+  "name": "gb10_offload",
+  "arguments": {
+    "code": "N=1e6; x=rand(N,1); y=rand(N,1); fprintf('%f\\n', 4*sum(x.^2+y.^2<=1)/N);",
+    "mode": "octave",
+    "work_items": [{"seed": 1}, {"seed": 2}],
+    "multi_node": true
+  }
+}
+```
+
+---
+
 ## Status
 
 🚀 RPI loop, ChromaDB memory, Sentry, HITL gate, Vision analyst, Digital Twin sync, Docker + one-click launch.  
-🧪 MCP server with tools; NVIDIA Nemotron + NAT integration for agentic MATLAB workflows.
+🧪 MCP server with tools; NVIDIA Nemotron + NAT integration for agentic MATLAB workflows.  
+🖥️ GB10 (DGX Spark) remote compute: multi-node cluster offload with Octave, GPU Coder, and binary paths.
 
 ---
 
