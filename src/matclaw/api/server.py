@@ -1560,6 +1560,7 @@ def _activate_runtime(m: ModelConfig):
     settings.llm.provider = m.provider
     settings.llm.model = m.model
     settings.llm.api_key = m.api_key
+    settings.llm.base_url = m.base_url
 
 @app.get("/api/settings/active-model")
 def get_active_model():
