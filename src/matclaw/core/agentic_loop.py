@@ -263,7 +263,8 @@ async def run_agentic_loop(
             system=AGENTIC_SYSTEM,
             messages=messages,
             tools=tools_schema,
-            api_key=None,
+            api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
             max_tokens=max_tok,
         )
 
@@ -449,8 +450,9 @@ async def run_agentic_loop(
                 system=AGENTIC_SYSTEM,
                 messages=messages,
                 tools=[],          # no tools — just prose
-                api_key=None,
-                max_tokens=1024,
+                api_key=settings.llm.api_key,
+                base_url=getattr(settings.llm, "base_url", None),
+                max_tokens=max(2048, max_tok // 2),
             )
             _add_usage(summary_resp.get("usage"))
             final_text = summary_resp.get("text", "").strip() or "Task complete."

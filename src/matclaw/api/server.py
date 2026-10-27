@@ -346,7 +346,8 @@ def _llm_chat(user_text: str, system: str = MATCLAW_PERSONA,
             model=settings.llm.model,
             system=sys_arg,
             messages=messages,
-            api_key=None,
+            api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
             max_tokens=max_tokens,
         )
         return result or ""
@@ -1221,7 +1222,10 @@ async def smart_generate(req: SmartGenRequest):
             provider=settings.llm.provider,
             model=settings.llm.model,
             system=system,
-            messages=[{"role": "user", "content": user_msg}]
+            messages=[{"role": "user", "content": user_msg}],
+            api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
+            max_tokens=4096,
         )
 
     try:
@@ -1285,6 +1289,8 @@ async def optimize_prompt(req: OptimizePromptReq):
             system=system,
             messages=[{"role": "user", "content": req.prompt}],
             api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
+            max_tokens=4096,
         )
     try:
         result = await asyncio.to_thread(_call)
@@ -1398,6 +1404,8 @@ async def run_pipeline_endpoint(pipeline_id: str):
                             system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
                             messages=[{"role": "user", "content": task_text}],
                             api_key=settings.llm.api_key,
+                            base_url=getattr(settings.llm, "base_url", None),
+                            max_tokens=4096,
                         )
                         code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
                         generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
@@ -1415,6 +1423,8 @@ async def run_pipeline_endpoint(pipeline_id: str):
                             system=agent_system,
                             messages=[{"role": "user", "content": task_text}],
                             api_key=settings.llm.api_key,
+                            base_url=getattr(settings.llm, "base_url", None),
+                            max_tokens=4096,
                         )
 
                     node_results[node_id] = agent_result
@@ -2017,7 +2027,8 @@ async def run_nl_stream(req: RunRequest):
                     model=settings.llm.model,
                     system=sys_arg,
                     messages=messages,
-                    api_key=None,
+                    api_key=settings.llm.api_key,
+                    base_url=getattr(settings.llm, "base_url", None),
                     max_tokens=8192,
                 ):
                     if chunk["type"] == "thinking":
