@@ -335,6 +335,16 @@ def _build_messages(
         return system, messages
 
 
+def _active_llm() -> dict[str, Any]:
+    """Provider, model, key, and base URL for the model the user has selected."""
+    return {
+        "provider": settings.llm.provider,
+        "model": settings.llm.model,
+        "api_key": settings.llm.api_key,
+        "base_url": settings.llm.base_url,
+    }
+
+
 def _llm_chat(user_text: str, system: str = MATCLAW_PERSONA,
               history: list[dict[str, str]] | None = None,
               max_tokens: int = 4096) -> str:
@@ -342,11 +352,9 @@ def _llm_chat(user_text: str, system: str = MATCLAW_PERSONA,
     try:
         sys_arg, messages = _build_messages(user_text, system, history)
         result = call_chat_completion(
-            provider=settings.llm.provider,
-            model=settings.llm.model,
+            **_active_llm(),
             system=sys_arg,
             messages=messages,
-            api_key=None,
             max_tokens=max_tokens,
         )
         return result or ""
@@ -1120,10 +1128,17 @@ async def health():
     from src.matclaw.llm.llm_client import resolve_api_key
 
     prov = (settings.llm.provider or "").lower().strip()
-    llm_key = resolve_api_key(settings.llm.provider, settings.llm.api_key)
+    llm_key = resolve_api_key(
+        settings.llm.provider,
+        settings.llm.api_key,
+        base_url=settings.llm.base_url,
+    )
+    # A local runtime is ready when a model and its loopback base URL are selected.
+    llm_ready = bool(settings.llm.base_url and settings.llm.model) if prov == "local" else bool(llm_key)
     llm_status = {
         "provider": prov,
-        "api_key_configured": bool(llm_key),
+        "model": settings.llm.model,
+        "api_key_configured": llm_ready,
     }
     matlab_ok = bool(matlab_status.get("healthy"))
     llm_ok = llm_status["api_key_configured"]
@@ -1218,10 +1233,9 @@ async def smart_generate(req: SmartGenRequest):
 
     def _call_llm():
         return call_chat_completion(
-            provider=settings.llm.provider,
-            model=settings.llm.model,
+            **_active_llm(),
             system=system,
-            messages=[{"role": "user", "content": user_msg}]
+            messages=[{"role": "user", "content": user_msg}],
         )
 
     try:
@@ -1280,11 +1294,9 @@ async def optimize_prompt(req: OptimizePromptReq):
     )
     def _call():
         return call_chat_completion(
-            provider=settings.llm.provider,
-            model=settings.llm.model,
+            **_active_llm(),
             system=system,
             messages=[{"role": "user", "content": req.prompt}],
-            api_key=settings.llm.api_key,
         )
     try:
         result = await asyncio.to_thread(_call)
@@ -1393,11 +1405,9 @@ async def run_pipeline_endpoint(pipeline_id: str):
                         # Path B: LLM generates then executes
                         raw = await asyncio.to_thread(
                             call_chat_completion,
-                            provider=settings.llm.provider,
-                            model=settings.llm.model,
+                            **_active_llm(),
                             system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
                             messages=[{"role": "user", "content": task_text}],
-                            api_key=settings.llm.api_key,
                         )
                         code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
                         generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
@@ -1410,11 +1420,9 @@ async def run_pipeline_endpoint(pipeline_id: str):
                         # Path C: LLM text only
                         agent_result = await asyncio.to_thread(
                             call_chat_completion,
-                            provider=settings.llm.provider,
-                            model=settings.llm.model,
+                            **_active_llm(),
                             system=agent_system,
                             messages=[{"role": "user", "content": task_text}],
-                            api_key=settings.llm.api_key,
                         )
 
                     node_results[node_id] = agent_result
@@ -1514,6 +1522,12 @@ def list_models():
 
 @app.post("/api/settings/models")
 def add_model(req: ModelConfig):
+    if req.provider == "local":
+        from src.matclaw.llm.local_models import is_allowed_local_base_url
+
+        if not is_allowed_local_base_url(req.base_url):
+            raise HTTPException(status_code=400, detail="Local models must use a loopback server.")
+        req.api_key = req.api_key or ""
     models = _load_models()
     if not req.id:
         req.id = str(uuid.uuid4())
@@ -1552,14 +1566,52 @@ def activate_model(model_id: str):
     if not target:
         raise HTTPException(status_code=404, detail="Model not found")
     _save_models(models)
-    _activate_runtime(ModelConfig(**target))
+    _activate_runtime(ModelConfig(**{k: v for k, v in target.items() if k in ModelConfig.model_fields}))
     return target
 
 def _activate_runtime(m: ModelConfig):
     """Hot-swap the runtime LLM settings so subsequent calls use the new model."""
     settings.llm.provider = m.provider
     settings.llm.model = m.model
-    settings.llm.api_key = m.api_key
+    settings.llm.api_key = m.api_key or None
+    if m.provider in ("local", "openai-compatible"):
+        settings.llm.base_url = m.base_url
+    else:
+        settings.llm.base_url = None
+
+class LocalModelSelect(BaseModel):
+    model: str
+    base_url: str
+    label: str = ""
+    source: str = "Local"
+
+@app.get("/api/settings/local-models")
+def list_local_models():
+    """Models currently served by Ollama, LM Studio, llama.cpp, vLLM, or LocalAI."""
+    from src.matclaw.llm.local_models import discover_local_models
+
+    return discover_local_models()
+
+@app.post("/api/settings/models/use-local")
+def use_local_model(req: LocalModelSelect):
+    """Save and activate a model that is already running on this machine."""
+    from src.matclaw.llm.local_models import upsert_local_selection
+
+    models = _load_models()
+    try:
+        selected = upsert_local_selection(
+            models,
+            model=req.model,
+            base_url=req.base_url,
+            label=req.label,
+            source=req.source,
+            new_id=str(uuid.uuid4()),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _save_models(models)
+    _activate_runtime(ModelConfig(**{k: v for k, v in selected.items() if k in ModelConfig.model_fields}))
+    return selected
 
 @app.get("/api/settings/active-model")
 def get_active_model():
@@ -2012,11 +2064,9 @@ async def run_nl_stream(req: RunRequest):
             # only the clean "reply" as text after parsing.
             try:
                 async for chunk in call_chat_completion_stream(
-                    provider=settings.llm.provider,
-                    model=settings.llm.model,
+                    **_active_llm(),
                     system=sys_arg,
                     messages=messages,
-                    api_key=None,
                     max_tokens=8192,
                 ):
                     if chunk["type"] == "thinking":
@@ -2377,12 +2427,9 @@ async def run_nl_stream(req: RunRequest):
                             )
                             raw = await asyncio.to_thread(
                                 call_chat_completion,
-                                provider=settings.llm.provider,
-                                model=settings.llm.model,
+                                **_active_llm(),
                                 system=codegen_system,
                                 messages=[{"role": "user", "content": task_text}],
-                                api_key=settings.llm.api_key,
-                                base_url=getattr(settings.llm, "base_url", None),
                                 max_tokens=1024,
                             )
                             code_blocks = re.findall(
@@ -2414,12 +2461,9 @@ async def run_nl_stream(req: RunRequest):
                         else:
                             agent_result = await asyncio.to_thread(
                                 call_chat_completion,
-                                provider=settings.llm.provider,
-                                model=settings.llm.model,
+                                **_active_llm(),
                                 system=agent_system,
                                 messages=[{"role": "user", "content": task_text}],
-                                api_key=settings.llm.api_key,
-                                base_url=getattr(settings.llm, "base_url", None),
                                 max_tokens=512,
                             )
                             router.mark_status(node_id, "completed", result=agent_result)

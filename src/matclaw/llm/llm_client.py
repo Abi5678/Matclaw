@@ -42,7 +42,11 @@ def _usage_to_dict(u: Any) -> dict[str, int] | None:
     return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": total}
 
 
-def resolve_api_key(provider: str, api_key: str | None = None) -> str | None:
+def resolve_api_key(
+    provider: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> str | None:
     if api_key:
         return api_key
     p = (provider or "").lower().strip()
@@ -50,13 +54,33 @@ def resolve_api_key(provider: str, api_key: str | None = None) -> str | None:
         return os.environ.get("NVIDIA_API_KEY")
     if p == "google":
         return os.environ.get("GOOGLE_API_KEY")
+    if p == "local":
+        # Ollama, LM Studio, and llama.cpp accept any non-empty bearer token.
+        return "local"
     if p == "openai-compatible":
-        return None  # must be passed explicitly
+        from src.matclaw.llm.local_models import is_allowed_local_base_url
+
+        if is_allowed_local_base_url(base_url):
+            return "local"
+        return None  # a remote compatible endpoint must be passed explicitly
     if p == "anthropic":
         return os.environ.get("ANTHROPIC_API_KEY")
     import logging as _log
     _log.getLogger(__name__).warning("Unknown LLM provider %r in resolve_api_key; returning None", provider)
     return None
+
+
+def _is_openai_compatible(provider: str) -> bool:
+    return (provider or "").lower().strip() in {"nvidia", "openai-compatible", "local"}
+
+
+def _openai_base_url(provider: str, base_url: str | None) -> str:
+    p = (provider or "").lower().strip()
+    if p == "nvidia":
+        return NVIDIA_API_BASE
+    if not base_url:
+        raise RuntimeError("base_url is required for a local or OpenAI-compatible model.")
+    return base_url
 
 
 import re as _re
@@ -212,7 +236,7 @@ def call_chat_completion(
     Unified chat completion across NVIDIA(OpenAI-compatible), Google, and Anthropic.
     Returns plain text response.
     """
-    key = resolve_api_key(provider, api_key)
+    key = resolve_api_key(provider, api_key, base_url=base_url)
     if not key:
         raise RuntimeError("Missing API key for provider.")
     p = (provider or "").lower().strip()
@@ -251,12 +275,10 @@ def call_chat_completion(
                                 content = paragraphs[-1] if paragraphs else reasoning
                 return content.strip()
 
-            if p == "openai-compatible":
+            if p in ("openai-compatible", "local"):
                 if OpenAI is None:
                     raise RuntimeError("openai package not installed.")
-                if not base_url:
-                    raise RuntimeError("base_url is required for openai-compatible provider.")
-                client = OpenAI(base_url=base_url, api_key=key)
+                client = OpenAI(base_url=_openai_base_url(p, base_url), api_key=key)
                 openai_messages = [{"role": "system", "content": system}]
                 openai_messages.extend(messages)
                 resp = client.chat.completions.create(
@@ -320,18 +342,15 @@ async def call_chat_completion_stream(
     Async streaming variant — yields {"type": "thinking"|"text", "token": "..."} chunks.
     Currently supports NVIDIA (OpenAI-compatible). Falls back to non-streaming for others.
     """
-    key = resolve_api_key(provider, api_key)
+    key = resolve_api_key(provider, api_key, base_url=base_url)
     if not key:
         raise RuntimeError("Missing API key for provider.")
     p = (provider or "").lower().strip()
 
-    if p in ("nvidia", "openai-compatible"):
+    if _is_openai_compatible(p):
         if AsyncOpenAI is None:
             raise RuntimeError("openai package not installed.")
-        stream_base = NVIDIA_API_BASE if p == "nvidia" else base_url
-        if p == "openai-compatible" and not stream_base:
-            raise RuntimeError("base_url is required for openai-compatible provider.")
-        client = AsyncOpenAI(base_url=stream_base, api_key=key)
+        client = AsyncOpenAI(base_url=_openai_base_url(p, base_url), api_key=key)
         openai_messages = [{"role": "system", "content": system}]
         openai_messages.extend(messages)
         stream = await client.chat.completions.create(
@@ -389,10 +408,10 @@ async def call_chat_with_tools(
     Internal history is kept in OpenAI wire format.
     For Anthropic we convert on the fly before the API call.
 
-    Supported providers:  nvidia, openai-compatible, anthropic
+    Supported providers:  nvidia, openai-compatible, local, anthropic
     Google: no function-calling support yet — falls back to plain text.
     """
-    key = resolve_api_key(provider, api_key)
+    key = resolve_api_key(provider, api_key, base_url=base_url)
     if not key:
         raise RuntimeError("Missing API key for provider.")
     p = (provider or "").lower().strip()
@@ -497,17 +516,15 @@ async def call_chat_with_tools(
         return {"text": text.strip(), "tool_calls": tool_calls, "usage": usage}
 
     # ── NVIDIA / OpenAI-compatible ────────────────────────────────────────────
-    if p in ("nvidia", "openai-compatible"):
+    if _is_openai_compatible(p):
         if OpenAI is None:
             raise RuntimeError("openai package not installed.")
         import json as _json
-        stream_base = NVIDIA_API_BASE if p == "nvidia" else base_url
-        if p == "openai-compatible" and not stream_base:
-            raise RuntimeError("base_url required for openai-compatible provider.")
+        openai_base = _openai_base_url(p, base_url)
         openai_messages = [{"role": "system", "content": system}, *messages]
 
         def _openai_tools_call():
-            client = OpenAI(base_url=stream_base, api_key=key)
+            client = OpenAI(base_url=openai_base, api_key=key)
             return client.chat.completions.create(
                 model=model,
                 messages=openai_messages,

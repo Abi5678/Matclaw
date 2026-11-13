@@ -8,6 +8,8 @@ __pycache__/
 *.log
 
 .env
+.matclaw_models.json
+.matclaw_models.tmp
 .mypy_cache/
 .matclaw_chromadb/
 *.sqlite3

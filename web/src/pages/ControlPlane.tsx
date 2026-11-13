@@ -37,6 +37,13 @@ interface Model {
   active: boolean
 }
 
+interface LocalModel {
+  model: string
+  label: string
+  base_url: string
+  source: string
+}
+
 // ── Sub-components ───────────────────────────────────────────────────────────
 
 function SkillBadge({ skill }: { skill: string }) {
@@ -543,6 +550,7 @@ export default function ControlPlane() {
   // ── active model + model list ────────────────────────────────
   const [activeModelLabel, setActiveModelLabel] = useState('NVIDIA Nemotron Ultra 253B')
   const [modelList, setModelList] = useState<{id:string, label:string, active:boolean}[]>([])
+  const [localModels, setLocalModels] = useState<LocalModel[]>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
   const modelPickerRef = useRef<HTMLDivElement>(null)
 
@@ -559,6 +567,10 @@ export default function ControlPlane() {
       .then(r => r.json())
       .then(data => { if (data.label) setActiveModelLabel(data.label) })
       .catch((err) => { console.error('Failed to fetch active model:', err) })
+    fetch(`${API}/api/settings/local-models`)
+      .then(r => r.json())
+      .then((data: LocalModel[]) => setLocalModels(Array.isArray(data) ? data : []))
+      .catch((err) => { console.error('Failed to scan local models:', err) })
   }, [])
 
   useEffect(() => { fetchModels() }, [fetchModels])
@@ -575,6 +587,20 @@ export default function ControlPlane() {
 
   const switchModel = async (id: string) => {
     await fetch(`${API}/api/settings/models/${id}/activate`, { method: 'POST' })
+    setShowModelPicker(false)
+    fetchModels()
+  }
+
+  const useLocalModel = async (local: LocalModel) => {
+    const res = await fetch(`${API}/api/settings/models/use-local`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(local),
+    })
+    if (res.ok) {
+      const selected = await res.json()
+      if (selected.label) setActiveModelLabel(selected.label)
+    }
     setShowModelPicker(false)
     fetchModels()
   }
@@ -1511,7 +1537,7 @@ export default function ControlPlane() {
                     </button>
                     {showModelPicker && (
                       <div
-                        className="absolute bottom-full right-0 mb-1 w-56 rounded-lg shadow-xl overflow-hidden z-50"
+                        className="absolute bottom-full right-0 mb-1 w-72 rounded-lg shadow-xl overflow-hidden z-50"
                         style={{
                           backgroundColor: 'var(--bg-elevated)',
                           border: '1px solid var(--border-default)',
@@ -1520,7 +1546,7 @@ export default function ControlPlane() {
                         <div className="px-3 py-2 border-b border-subtle bg-hover/30">
                           <p className="text-[10px] font-bold uppercase tracking-wider text-muted">Select Model</p>
                         </div>
-                        <div className="max-h-64 overflow-y-auto">
+                        <div className="max-h-72 overflow-y-auto">
                           {modelList.map(m => (
                             <button
                               key={m.id}
@@ -1533,6 +1559,32 @@ export default function ControlPlane() {
                                 {m.label}
                               </span>
                               {m.active && <Shield className="w-3 h-3" style={{ color: 'var(--accent)' }} />}
+                            </button>
+                          ))}
+                          <div className="px-3 py-2" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-muted">Running locally</p>
+                          </div>
+                          {localModels.length === 0 && (
+                            <p className="px-3 pb-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                              No local model is running
+                            </p>
+                          )}
+                          {localModels.map(local => (
+                            <button
+                              key={`${local.base_url}:${local.model}`}
+                              onClick={() => useLocalModel(local)}
+                              className="w-full flex items-center justify-between px-3 py-2 text-left transition"
+                              onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
+                              onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                            >
+                              <span className="min-w-0">
+                                <span className="block text-xs truncate" style={{ color: 'var(--text-primary)' }}>
+                                  {local.label}
+                                </span>
+                                <span className="block text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
+                                  {local.source}
+                                </span>
+                              </span>
                             </button>
                           ))}
                         </div>

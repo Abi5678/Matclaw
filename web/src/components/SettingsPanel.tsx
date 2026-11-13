@@ -2,16 +2,25 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTheme } from '../hooks/useTheme'
 import { type ThemeMode } from '../lib/themeContext'
 import { THEME_OPTIONS } from '../lib/constants'
-import { Check, Monitor, Moon, Sun, Palette, Plus, Trash2, X, Cpu } from 'lucide-react'
+import { Check, Monitor, Moon, Sun, Palette, Plus, Trash2, X, Cpu, RefreshCw } from 'lucide-react'
 
 const API = 'http://localhost:8000'
 
 const PROVIDERS = [
+  { value: 'local', label: 'Local' },
   { value: 'nvidia', label: 'NVIDIA' },
   { value: 'google', label: 'Google' },
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai-compatible', label: 'OpenAI Compatible' },
 ]
+
+interface LocalModel {
+  model: string
+  label: string
+  provider: string
+  base_url: string
+  source: string
+}
 
 interface ModelConfig {
   id: string
@@ -34,12 +43,14 @@ const THEME_ICONS: Record<ThemeMode, React.ReactNode> = {
 export default function SettingsPanel() {
   const { mode, setMode } = useTheme()
   const [models, setModels] = useState<ModelConfig[]>([])
+  const [localModels, setLocalModels] = useState<LocalModel[]>([])
+  const [localStatus, setLocalStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [showAddModel, setShowAddModel] = useState(false)
   const [newModel, setNewModel] = useState({
-    provider: 'openai-compatible',
+    provider: 'local',
     model: '',
     api_key: '',
-    base_url: '',
+    base_url: 'http://127.0.0.1:11434/v1',
     label: '',
   })
 
@@ -50,20 +61,43 @@ export default function SettingsPanel() {
       .catch(err => console.error('Failed to fetch models:', err))
   }, [])
 
+  const fetchLocalModels = useCallback(() => {
+    setLocalStatus('loading')
+    fetch(`${API}/api/settings/local-models`)
+      .then(r => r.json())
+      .then((data: LocalModel[]) => {
+        setLocalModels(Array.isArray(data) ? data : [])
+        setLocalStatus('ready')
+      })
+      .catch(err => {
+        console.error('Failed to scan local models:', err)
+        setLocalStatus('error')
+      })
+  }, [])
+
   useEffect(() => { fetchModels() }, [fetchModels])
+  useEffect(() => { fetchLocalModels() }, [fetchLocalModels])
+
+  const needsKey = newModel.provider !== 'local'
+  const needsBase = newModel.provider === 'local' || newModel.provider === 'openai-compatible'
+  const canAdd = Boolean(
+    newModel.model &&
+    newModel.label &&
+    (needsKey ? newModel.api_key : newModel.base_url)
+  )
 
   const handleAddModel = async () => {
-    if (!newModel.model || !newModel.api_key || !newModel.label) return
+    if (!canAdd) return
     try {
       const body: ModelConfig = {
         id: '',
         provider: newModel.provider,
         model: newModel.model,
-        api_key: newModel.api_key,
+        api_key: needsKey ? newModel.api_key : '',
         label: newModel.label,
         active: false,
       }
-      if (newModel.provider === 'openai-compatible' && newModel.base_url) {
+      if (needsBase && newModel.base_url) {
         body.base_url = newModel.base_url
       }
       await fetch(`${API}/api/settings/models`, {
@@ -72,7 +106,7 @@ export default function SettingsPanel() {
         body: JSON.stringify(body),
       })
       setShowAddModel(false)
-      setNewModel({ provider: 'openai-compatible', model: '', api_key: '', base_url: '', label: '' })
+      setNewModel({ provider: 'local', model: '', api_key: '', base_url: 'http://127.0.0.1:11434/v1', label: '' })
       fetchModels()
     } catch (e) {
       console.error(e)
@@ -86,6 +120,15 @@ export default function SettingsPanel() {
 
   const handleDeleteModel = async (id: string) => {
     await fetch(`${API}/api/settings/models/${id}`, { method: 'DELETE' })
+    fetchModels()
+  }
+
+  const handleUseLocal = async (local: LocalModel) => {
+    await fetch(`${API}/api/settings/models/use-local`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(local),
+    })
     fetchModels()
   }
 
@@ -191,6 +234,67 @@ export default function SettingsPanel() {
               </div>
             ))}
 
+            <div
+              className="rounded-xl px-4 py-3"
+              style={{
+                backgroundColor: 'var(--card-bg)',
+                border: '1px solid var(--card-border)',
+              }}
+            >
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div>
+                  <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                    Running on this machine
+                  </p>
+                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    Ollama, LM Studio, llama.cpp, vLLM, and LocalAI
+                  </p>
+                </div>
+                <button
+                  onClick={fetchLocalModels}
+                  className="p-1.5 rounded transition"
+                  style={{ color: 'var(--text-muted)' }}
+                  title="Scan again"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${localStatus === 'loading' ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+              {localStatus === 'error' && (
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  Could not reach the MatClaw server to scan for local models.
+                </p>
+              )}
+              {localStatus === 'ready' && localModels.length === 0 && (
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  No local model server responded. Start one, then scan again.
+                </p>
+              )}
+              <div className="space-y-1.5">
+                {localModels.map(local => (
+                  <button
+                    key={`${local.base_url}:${local.model}`}
+                    onClick={() => handleUseLocal(local)}
+                    className="w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition"
+                    style={{ backgroundColor: 'var(--bg-elevated)' }}
+                    onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--bg-hover)')}
+                    onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'var(--bg-elevated)')}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm truncate" style={{ color: 'var(--text-primary)' }}>
+                        {local.label}
+                      </span>
+                      <span className="block text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>
+                        {local.source} · {local.base_url}
+                      </span>
+                    </span>
+                    <span className="text-[10px] font-semibold flex-shrink-0" style={{ color: 'var(--accent)' }}>
+                      Use
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Add Model Button */}
             <button
               onClick={() => setShowAddModel(true)}
@@ -258,7 +362,7 @@ export default function SettingsPanel() {
       {showAddModel && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
           <div
-            className="rounded-lg shadow-2xl w-full max-md-md overflow-hidden"
+            className="rounded-lg shadow-2xl w-full max-w-md overflow-hidden"
             style={{
               backgroundColor: 'var(--bg-elevated)',
               border: '1px solid var(--border-default)',
@@ -310,7 +414,7 @@ export default function SettingsPanel() {
                   type="text"
                   value={newModel.model}
                   onChange={e => setNewModel((m: typeof newModel) => ({ ...m, model: e.target.value }))}
-                  placeholder="e.g. gpt-4o, claude-sonnet-4-20250514"
+                  placeholder={newModel.provider === 'local' ? 'e.g. llama3.2' : 'e.g. gpt-4o, claude-sonnet-4-20250514'}
                   className="w-full rounded p-2.5 text-sm outline-none"
                   style={{
                     backgroundColor: 'var(--bg-surface)',
@@ -320,27 +424,29 @@ export default function SettingsPanel() {
                 />
               </div>
 
-              {/* API Key */}
-              <div>
-                <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-                  API Key
-                </label>
-                <input
-                  type="password"
-                  value={newModel.api_key}
-                  onChange={e => setNewModel((m: typeof newModel) => ({ ...m, api_key: e.target.value }))}
-                  placeholder="sk-..."
-                  className="w-full rounded p-2.5 text-sm outline-none font-mono"
-                  style={{
-                    backgroundColor: 'var(--bg-surface)',
-                    border: '1px solid var(--border-default)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
-              </div>
+              {/* API Key (cloud providers) */}
+              {needsKey && (
+                <div>
+                  <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                    API Key
+                  </label>
+                  <input
+                    type="password"
+                    value={newModel.api_key}
+                    onChange={e => setNewModel((m: typeof newModel) => ({ ...m, api_key: e.target.value }))}
+                    placeholder="sk-..."
+                    className="w-full rounded p-2.5 text-sm outline-none font-mono"
+                    style={{
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-default)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                </div>
+              )}
 
-              {/* Base URL (only for openai-compatible) */}
-              {newModel.provider === 'openai-compatible' && (
+              {/* Base URL for local and OpenAI-compatible servers */}
+              {needsBase && (
                 <div>
                   <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
                     Base URL
@@ -349,7 +455,7 @@ export default function SettingsPanel() {
                     type="text"
                     value={newModel.base_url}
                     onChange={e => setNewModel((m: typeof newModel) => ({ ...m, base_url: e.target.value }))}
-                    placeholder="https://api.example.com/v1"
+                    placeholder={newModel.provider === 'local' ? 'http://127.0.0.1:11434/v1' : 'https://api.example.com/v1'}
                     className="w-full rounded p-2.5 text-sm outline-none font-mono"
                     style={{
                       backgroundColor: 'var(--bg-surface)',
@@ -398,7 +504,7 @@ export default function SettingsPanel() {
               </button>
               <button
                 onClick={handleAddModel}
-                disabled={!newModel.model || !newModel.api_key || !newModel.label}
+                disabled={!canAdd}
                 className="px-4 py-2 rounded text-sm font-semibold transition disabled:opacity-40"
                 style={{
                   backgroundColor: 'var(--accent)',
