@@ -128,22 +128,26 @@ class HITLSettings(BaseModel):
     threshold_seconds: float = Field(default=600.0, description="Estimate above this triggers 'Proceed? [Yes/No]'.")
 
 
-_VALID_LLM_PROVIDERS = frozenset({"nvidia", "google", "anthropic", "openai-compatible"})
+_VALID_LLM_PROVIDERS = frozenset({"nvidia", "google", "anthropic", "openai-compatible", "local"})
 
 class LLMSettings(BaseModel):
-    """LLM for NL routing and vision: Anthropic, Google (Gemini), or NVIDIA (Nemotron)."""
+    """LLM for NL routing and vision: Anthropic, Google (Gemini), NVIDIA, or a local server."""
 
     provider: str = Field(
         default="nvidia",
-        description="One of: anthropic, google, nvidia, openai-compatible.",
+        description="One of: anthropic, google, nvidia, openai-compatible, local.",
     )
     api_key: Optional[str] = Field(
         default=None,
-        description="API key (or set ANTHROPIC_API_KEY / GOOGLE_API_KEY / NVIDIA_API_KEY).",
+        description="API key (or set ANTHROPIC_API_KEY / GOOGLE_API_KEY / NVIDIA_API_KEY). Unused for local models.",
     )
     model: str = Field(
         default="nvidia/nvidia-nemotron-nano-9b-v2",
-        description="Model name (e.g. nvidia/nvidia-nemotron-nano-9b-v2, gemini-2.0-flash).",
+        description="Model name (e.g. nvidia/nvidia-nemotron-nano-9b-v2, gemini-2.0-flash, llama3.2).",
+    )
+    base_url: Optional[str] = Field(
+        default=None,
+        description="OpenAI-compatible base URL. Required for local and openai-compatible providers.",
     )
 
 
