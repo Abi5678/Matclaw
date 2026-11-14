@@ -21,11 +21,40 @@ import os
 from typing import Any, AsyncGenerator, Callable
 
 from matclaw.core.spec_compliance import analyze_matlab_run
-from matclaw.llm.llm_client import call_chat_with_tools, resolve_api_key
+from matclaw.llm.llm_client import (
+    _extract_code_from_reasoning,
+    call_chat_with_tools,
+    resolve_api_key,
+)
 from matclaw.tools.base import ToolContext
 from matclaw.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+_PLOT_HINTS = (
+    "plot", "graph", "visuali", "surf", "mesh", "contour", "heatmap",
+    "scatter", "histogram", "animate", "animation", "3d", "surface",
+    "figure", "chart", "draw", "fft", "ode", "simul", "matrix", "eigen",
+)
+
+
+def _user_wants_matlab_execution(user_text: str) -> bool:
+    lower = (user_text or "").lower()
+    return any(h in lower for h in _PLOT_HINTS)
+
+
+def _extract_runnable_matlab(text: str) -> str:
+    """Pull a complete-enough MATLAB script out of prose / fences."""
+    code = (_extract_code_from_reasoning(text or "") or "").strip()
+    if not code:
+        return ""
+    # Reject obviously truncated tails (cut mid-token / mid-string)
+    tail = code.rstrip()[-24:]
+    if tail.endswith(("=", "(", "[", "{", ",", "\\", "'", '"')):
+        return ""
+    if len(code) < 20:
+        return ""
+    return code
 
 # ── Agentic system prompt ─────────────────────────────────────────────────────
 
@@ -296,9 +325,29 @@ async def run_agentic_loop(
             yield _sse("agent_thought", {"step": step, "text": llm_text})
             final_text = llm_text  # keep last prose as candidate final answer
 
-        # ── No tool calls → check if we should nudge or finish ───────────────
+        # ── No tool calls → recover embedded MATLAB, nudge, or finish ────────
         if not tool_calls:
-            if last_tool_failed and retry_nudge_count < _MAX_NUDGES:
+            # Models (esp. Qwen/Ollama) often dump ```matlab``` in prose instead of
+            # emitting structured tool_calls. Auto-promote that to run_matlab so
+            # Flow shows a captured plot instead of only an Edit & Run card.
+            recovered = _extract_runnable_matlab(llm_text)
+            if (
+                recovered
+                and _user_wants_matlab_execution(user_text)
+                and not all_plots
+                and retry_nudge_count < _MAX_NUDGES
+            ):
+                retry_nudge_count += 1
+                logger.info(
+                    "Agentic recovery: promoting fenced MATLAB (%d chars) to run_matlab",
+                    len(recovered),
+                )
+                tool_calls = [{
+                    "id": f"recover_matlab_{step}_{retry_nudge_count}",
+                    "name": "run_matlab",
+                    "inputs": {"code": recovered},
+                }]
+            elif last_tool_failed and retry_nudge_count < _MAX_NUDGES:
                 retry_nudge_count += 1
                 messages.append({"role": "assistant", "content": llm_text or ""})
                 messages.append({
@@ -311,6 +360,31 @@ async def run_agentic_loop(
                 })
                 logger.info("Agentic nudge %d/%d: re-prompting LLM to retry after failure", retry_nudge_count, _MAX_NUDGES)
                 continue
+            elif (
+                _user_wants_matlab_execution(user_text)
+                and not all_plots
+                and retry_nudge_count < _MAX_NUDGES
+            ):
+                retry_nudge_count += 1
+                messages.append({"role": "assistant", "content": llm_text or ""})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You must call the run_matlab tool with complete, self-contained "
+                        "MATLAB code that creates the requested figure. Do not only describe "
+                        "or paste code in chat — invoke run_matlab so the plot is captured."
+                    ),
+                })
+                logger.info(
+                    "Agentic nudge %d/%d: re-prompting LLM to call run_matlab for plot request",
+                    retry_nudge_count,
+                    _MAX_NUDGES,
+                )
+                continue
+            else:
+                break
+
+        if not tool_calls:
             break
 
         # ── Dispatch tool calls ───────────────────────────────────────────────

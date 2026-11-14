@@ -2,8 +2,9 @@ import { useState, useCallback, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { Play, Save, FileCode2, Plus, X } from 'lucide-react'
 import type { ProjectFile } from '../lib/sessions'
+import { getApiBase } from '../lib/apiBase'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 interface EditorTab {
   file: ProjectFile

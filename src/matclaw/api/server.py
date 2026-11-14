@@ -545,42 +545,36 @@ async def _apply_matlab_headless_figures() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _headless_figure_task
-    # Connect to MATLAB in a background thread to prevent startup hangs
-    logger.info("Connecting to MATLAB session (non-blocking)...")
-    try:
-        await asyncio.to_thread(bridge.start)
-        if bridge.is_healthy():
-            logger.info("MATLAB connected successfully.")
-        else:
-            # Try connecting to any available shared session
-            import matlab.engine as _me  # type: ignore
-            sessions = await asyncio.to_thread(_me.find_matlab)
-            if sessions:
-                bridge.settings.session_name = sessions[0]
-                await asyncio.to_thread(bridge.start)
-                logger.info("Connected to shared MATLAB session: %s", sessions[0])
-            else:
-                logger.warning("No MATLAB session found — bridge will retry on first request.")
-    except Exception as _e:
-        logger.warning("MATLAB startup skipped or failed: %s", _e)
-
-    # Register runtimes now that bridge is live
+    # Register runtimes/tools/daemon first so HTTP can bind even if MATLAB is slow.
     _runtime_registry.register(MatlabRuntime(bridge, _run_matlab_and_collect))
     _runtime_registry.register(PythonRuntime(cwd=str(ROOT), venv_python=sys.executable))
     _runtime_registry.register(ShellRuntime(cwd=str(ROOT)))
-    # Auto-discover pluggable tools
     tool_registry.discover()
-    # Start daemon
     _heartbeat.start()
     logger.info("MatClaw enterprise daemon started. Runtimes: %s",
                 [r["name"] for r in _runtime_registry.list_runtimes()])
 
-    # Defer headless MATLAB eval until after yield — Uvicorn does not accept connections until yield.
-    async def _headless_after_bind() -> None:
-        await asyncio.sleep(0.05)
-        await _apply_matlab_headless_figures()
+    async def _connect_matlab_bg() -> None:
+        logger.info("Connecting to MATLAB session (background)...")
+        try:
+            await asyncio.to_thread(bridge.start)
+            if bridge.is_healthy():
+                logger.info("MATLAB connected successfully.")
+            else:
+                import matlab.engine as _me  # type: ignore
+                sessions = await asyncio.to_thread(_me.find_matlab)
+                if sessions:
+                    bridge.settings.session_name = sessions[0]
+                    await asyncio.to_thread(bridge.start)
+                    logger.info("Connected to shared MATLAB session: %s", sessions[0])
+                else:
+                    logger.warning("No MATLAB session found — bridge will retry on first request.")
+        except Exception as _e:
+            logger.warning("MATLAB startup skipped or failed: %s", _e)
+        if bridge.is_healthy():
+            await _apply_matlab_headless_figures()
 
-    _headless_figure_task = asyncio.create_task(_headless_after_bind())
+    _headless_figure_task = asyncio.create_task(_connect_matlab_bg())
 
     yield
 
@@ -1684,9 +1678,19 @@ async def run_nl(req: RunRequest):
             code = plan.get("code") or ""
             # Strip markdown fences if LLM wrapped them
             code = re.sub(r"```(?:matlab)?\s*|\s*```", "", code).strip()
+            _truncated = bool(code) and code.rstrip().endswith(
+                ("=", "(", "[", "{", ",", "\\", "'", '"')
+            )
+            if (not code) or _truncated:
+                rescued = _extract_code_from_reasoning(
+                    f"{reply or ''}\n{raw_resp or ''}"
+                )
+                if rescued and len(rescued) > len(code or ""):
+                    code = rescued
+                    _truncated = False
 
             # Fallback to curated demo library
-            if not code:
+            if (not code) or _truncated:
                 code = find_demo(req.effective_text) or ""
 
             # Guard against hallucinated functions
@@ -1699,6 +1703,16 @@ async def run_nl(req: RunRequest):
                 exec_output, plots = await asyncio.to_thread(
                     _run_matlab_and_collect, code, req.effective_text
                 )
+                if (
+                    not plots
+                    and _classify_intent(req.effective_text) == "visualization"
+                ):
+                    demo = find_demo(req.effective_text) or ""
+                    if demo and demo.strip() != code.strip():
+                        code = demo
+                        exec_output, plots = await asyncio.to_thread(
+                            _run_matlab_and_collect, code, req.effective_text
+                        )
                 # Blend conversational reply with execution result
                 if reply and exec_output and not exec_output.startswith("MATLAB error"):
                     output = reply
@@ -2146,10 +2160,28 @@ async def run_nl_stream(req: RunRequest):
             if action == "run_matlab":
                 code = plan.get("code") or ""
                 code = re.sub(r"```(?:matlab)?\s*|\s*```", "", code).strip()
+                # Rescue code buried in reply/thinking when JSON `code` was empty
+                # or truncated mid-token (common with slow/Qwen completions).
+                _truncated = bool(code) and code.rstrip().endswith(
+                    ("=", "(", "[", "{", ",", "\\", "'", '"')
+                )
+                if (not code) or _truncated:
+                    rescued = _extract_code_from_reasoning(
+                        "\n".join([
+                            str(plan.get("reply") or ""),
+                            accumulated_thinking or "",
+                            raw or "",
+                        ])
+                    )
+                    if rescued and len(rescued) > len(code or ""):
+                        code = rescued
+                        _truncated = False
                 if code:
                     code = _sanitize_matlab_code(code)
-                if not code:
-                    code = find_demo(req.effective_text) or ""
+                if (not code) or _truncated:
+                    demo = find_demo(req.effective_text) or ""
+                    if demo:
+                        code = demo
 
                 if code:
                     # ── StaticAnalyzer pre-check ──────────────────────────
@@ -2177,6 +2209,32 @@ async def run_nl_stream(req: RunRequest):
                             break
                         yield ": keepalive\n\n"
                     exec_output, plots = await _mat_task
+
+                    # Visualization requests must return a PNG — fall back to a
+                    # known-good demo if the LLM script produced no figure.
+                    if (
+                        not plots
+                        and _classify_intent(req.effective_text) == "visualization"
+                    ):
+                        demo = find_demo(req.effective_text) or ""
+                        if demo and demo.strip() != code.strip():
+                            yield _sse("tool_start", {
+                                "action": "run_matlab",
+                                "label": "Retrying with known-good plot script...",
+                            })
+                            code = demo
+                            _mat_task = asyncio.create_task(
+                                asyncio.to_thread(
+                                    _run_matlab_and_collect, code, req.effective_text
+                                )
+                            )
+                            while not _mat_task.done():
+                                _done, _ = await asyncio.wait([_mat_task], timeout=12.0)
+                                if _mat_task in _done:
+                                    break
+                                yield ": keepalive\n\n"
+                            exec_output, plots = await _mat_task
+
                     yield _sse("tool_result", {
                         "output": exec_output,
                         "plots": plots,

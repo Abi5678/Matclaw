@@ -3,8 +3,9 @@ import { useTheme } from '../hooks/useTheme'
 import { type ThemeMode } from '../lib/themeContext'
 import { THEME_OPTIONS } from '../lib/constants'
 import { Check, Monitor, Moon, Sun, Palette, Plus, Trash2, X, Cpu } from 'lucide-react'
+import { getApiBase } from '../lib/apiBase'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 const PROVIDERS = [
   { value: 'nvidia', label: 'NVIDIA' },

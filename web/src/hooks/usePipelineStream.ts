@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback } from 'react'
 import type { NodeStatus } from '../lib/pipeline'
 import { cancelRun } from '../lib/pipeline'
+import { getApiBase } from '../lib/apiBase'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 export interface PipelineStreamState {
   nodeStatuses: Record<string, NodeStatus>

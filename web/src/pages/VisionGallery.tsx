@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Eye, ArrowLeft, RefreshCw, Image as ImageIcon, Search, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { getApiBase } from '../lib/apiBase'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 interface PlotEntry {
   name: string

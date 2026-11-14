@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { useVoiceInput } from '../hooks/useVoiceInput'
 import { useStreaming } from '../hooks/useStreaming'
 import type { Message, Session } from '../lib/sessions'
+import { getApiBase } from '../lib/apiBase'
 import {
   getOrCreateActiveSession, getSession, saveSession,
   createSession, setActiveSessionId,
@@ -27,7 +28,7 @@ import AgentsTab from './Agents'
 import CodeEditor from '../components/CodeEditor'
 import PipelineCanvas from '../components/PipelineCanvas'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 type MatlabUiStatus = 'checking' | 'online' | 'busy' | 'offline'
 

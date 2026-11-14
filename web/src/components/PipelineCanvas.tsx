@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { getApiBase } from '../lib/apiBase'
 import {
   ReactFlow,
   Background,
@@ -23,7 +24,7 @@ import {
 } from '../lib/pipeline'
 import { usePipelineStream } from '../hooks/usePipelineStream'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 // ── Agent types ─────────────────────────────────────────────────────────────
 interface Agent { id: string; name: string; system_prompt: string; allowed_tools: string[] }
@@ -283,13 +284,13 @@ function NodeInspector({
               {status.plots.map((plotPath, i) => (
                 <a
                   key={i}
-                  href={`http://localhost:8000${plotPath}`}
+                  href={`${API}${plotPath}`}
                   target="_blank"
                   rel="noreferrer"
                   title="Click to open full size"
                 >
                   <img
-                    src={`http://localhost:8000${plotPath}`}
+                    src={`${API}${plotPath}`}
                     alt={`Plot ${i + 1}`}
                     style={{
                       width: '100%', borderRadius: 8,

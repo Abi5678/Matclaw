@@ -1,6 +1,7 @@
+import { getApiBase } from './apiBase'
 // ── Session persistence (localStorage + server write-through) ────────────────
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 /** Fire-and-forget sync to backend. Never throws. */
 function _syncToServer(session: Session): void {

@@ -1,4 +1,5 @@
-const API = 'http://localhost:8000'
+import { getApiBase } from './apiBase'
+const API = getApiBase()
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

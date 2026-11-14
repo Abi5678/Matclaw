@@ -143,23 +143,35 @@ class MatlabBridge:
                         logger.info("Auto-discovered available sessions: %s. Connecting to: %s", sessions, sessions[0])
                         self._state.engine = matlab.engine.connect_matlab(sessions[0])
                     
-                    # C: Fallback – startup a new instance
+                    # C: Prefer connecting to an already-shared engine even when
+                    # find_matlab() returns empty (observed on macOS R2026a),
+                    # then fall back to starting a new instance.
                     else:
-                        logger.info("No shared sessions found. Starting new MATLAB instance...")
-                        # Try to find matlab binary if not in path
-                        bin_path = _find_matlab_binary()
-                        if bin_path:
-                            logger.info("Using MATLAB binary at: %s", bin_path)
-                            # Passing custom matlab path to start_matlab is not directly supported by engine API
-                            # But we can update the PATH for this process temporarily.
-                            old_path = os.environ.get("PATH", "")
-                            os.environ["PATH"] = f"{os.path.dirname(bin_path)}:{old_path}"
-                        
+                        connected = False
                         try:
-                            self._state.engine = matlab.engine.start_matlab("-nodesktop -nosplash")
-                        finally:
+                            logger.info("find_matlab empty; trying connect_matlab() to any shared engine...")
+                            self._state.engine = matlab.engine.connect_matlab()
+                            connected = True
+                            logger.info("Connected to shared MATLAB engine via connect_matlab().")
+                        except Exception as connect_exc:
+                            logger.info("No shared engine available (%s); starting new MATLAB instance...", connect_exc)
+
+                        if not connected:
+                            logger.info("No shared sessions found. Starting new MATLAB instance...")
+                            # Try to find matlab binary if not in path
+                            bin_path = _find_matlab_binary()
                             if bin_path:
-                                os.environ["PATH"] = old_path
+                                logger.info("Using MATLAB binary at: %s", bin_path)
+                                # Passing custom matlab path to start_matlab is not directly supported by engine API
+                                # But we can update the PATH for this process temporarily.
+                                old_path = os.environ.get("PATH", "")
+                                os.environ["PATH"] = f"{os.path.dirname(bin_path)}:{old_path}"
+
+                            try:
+                                self._state.engine = matlab.engine.start_matlab("-nodesktop -nosplash")
+                            finally:
+                                if bin_path:
+                                    os.environ["PATH"] = old_path
 
                 self._state.healthy = True
                 logger.info("MATLAB engine started successfully.")
