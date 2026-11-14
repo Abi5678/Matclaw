@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.matclaw.config.base_config import DebugAgentSettings, MatClawSettings
+from src.matclaw.config.base_config import DebugAgentSettings, MatBotSettings
 from src.matclaw.debug.debug_agent import DebugAgent
 from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest, MatlabCallResult
 from src.matclaw.memory.memory_manager import MemoryManager
@@ -31,7 +31,7 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    settings = MatClawSettings()
+    settings = MatBotSettings()
     bridge = MatlabBridge(settings=settings.matlab)
     bridge.start()
     if not bridge.is_healthy():

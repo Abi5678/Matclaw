@@ -218,11 +218,11 @@ function TerminalWindow() {
       'one-liner': {
         title: 'Daemon',
         command:
-          'cd MatClaw && python3.11 -m pip install -e . && python3.11 main.py',
+          'cd Matclaw && python3.11 -m pip install -e . && python3.11 main.py',
       },
       npm: {
         title: 'Web UI',
-        command: 'cd MatClaw/web && npm install && npm run dev',
+        command: 'cd Matclaw/web && npm install && npm run dev',
       },
       hackable: {
         title: 'Hackable',
@@ -245,7 +245,7 @@ function TerminalWindow() {
 
       const isCmd = /^(npm|python3\.11|python|cd|curl)$/i.test(clean)
       const isFlag = clean.startsWith('--')
-      const isRepo = /MatClaw|matclaw|src\.|pip|install|vite|main\.py/i.test(clean)
+      const isRepo = /MatBot|matbot|matclaw|src\.|pip|install|vite|main\.py/i.test(clean)
 
       const cls = isCmd
         ? 'text-accent'
@@ -524,7 +524,7 @@ export default function Landing() {
               </div>
             </div>
             <div className="leading-tight">
-              <div className="font-display text-sm font-bold tracking-tight text-text">MatClaw</div>
+              <div className="font-display text-sm font-bold tracking-tight text-text">MatBot</div>
               <div className="text-xs text-muted">Autonomous agentic OS</div>
             </div>
           </a>
@@ -661,7 +661,7 @@ export default function Landing() {
                   THE AI THAT ACTUALLY DOES THINGS.
                 </h1>
                 <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
-                  MatClaw runs persistent <span className="text-text/90">Research → Plan → Implement</span> loops on
+                  MatBot runs persistent <span className="text-text/90">Research → Plan → Implement</span> loops on
                   your MATLAB stack—audited, self-correcting, and tool-driven. Premium SaaS polish; cyberpunk soul.
                 </p>
               </motion.div>
@@ -939,7 +939,7 @@ export default function Landing() {
                   </div>
                   <div className="hidden sm:block">
                     <div className="flex items-center">
-                      {(contributors.length ? contributors : ['matclaw', 'labops', 'mcpfan', 'shipmore']).slice(0, 5).map((login, i) => (
+                      {(contributors.length ? contributors : ['matbot', 'labops', 'mcpfan', 'shipmore']).slice(0, 5).map((login, i) => (
                         <div
                           key={`${login}-${i}`}
                           className="relative -ml-2 h-10 w-10 overflow-hidden rounded-full border border-bg-2/60 bg-accent/10 grid place-items-center"
@@ -967,7 +967,7 @@ export default function Landing() {
                           <Star className="h-5 w-5 text-accent" />
                         </div>
                         <div>
-                          <div className="text-lg font-bold text-text">MatClaw is built in the open</div>
+                          <div className="text-lg font-bold text-text">MatBot is built in the open</div>
                           <div className="text-sm text-muted">Help shape the agent OS for MATLAB engineers.</div>
                         </div>
                       </div>
@@ -1014,7 +1014,7 @@ export default function Landing() {
                     <Sparkles className="h-5 w-5 text-accent" />
                   </div>
                   <div>
-                    <div className="text-sm font-bold text-text">MatClaw</div>
+                    <div className="text-sm font-bold text-text">MatBot</div>
                     <div className="text-xs text-muted">Cyberpunk-premium agent OS</div>
                   </div>
                 </div>
@@ -1098,7 +1098,7 @@ export default function Landing() {
 
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div className="text-sm text-muted">
-                © {new Date().getFullYear()} MatClaw. All rights reserved.
+                © {new Date().getFullYear()} MatBot. All rights reserved.
               </div>
               <div className="flex items-center gap-3">
                 <Button variant="ghost" asChild>

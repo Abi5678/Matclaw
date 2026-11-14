@@ -1,5 +1,5 @@
 """
-MatClaw FastAPI backend — serves the React Control Plane UI.
+MatBot FastAPI backend — serves the React Control Plane UI.
 Endpoints:
   POST /api/run          — NL → skill dispatch
   GET  /api/skills       — list available skills
@@ -35,7 +35,7 @@ if str(ROOT) not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
-from src.matclaw.config.base_config import MatClawSettings
+from src.matclaw.config.base_config import MatBotSettings
 from src.matclaw.matlab.matlab_bridge import MatlabBridge
 from src.matclaw.memory.memory_manager import MemoryManager
 from src.matclaw.core.experiment import ExperimentTracker
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # ── global singletons ───────────────────────────────────────────────────────
-settings = MatClawSettings()
+settings = MatBotSettings()
 bridge = MatlabBridge(settings=settings.matlab)
 memory = MemoryManager(persist_directory=str(ROOT / ".matclaw_chromadb"))
 tracker = ExperimentTracker(str(ROOT / ".matclaw_experiments.sqlite3"))
@@ -100,9 +100,9 @@ _heartbeat = Heartbeat(scheduler=_scheduler, job_manager=_job_manager)
 
 import json
 
-# ── MatClaw Persona ────────────────────────────────────────────────────────
+# ── MatBot Persona ────────────────────────────────────────────────────────
 MATCLAW_PERSONA = """\
-You are MatClaw, a brilliant and friendly MATLAB & engineering AI assistant.
+You are MatBot, a brilliant and friendly MATLAB & engineering AI assistant.
 
 Personality:
 - Warm, enthusiastic about engineering — like a favorite TA who genuinely loves the subject
@@ -146,7 +146,7 @@ IMPORTANT: If a user asks you to "plot", "draw", "compute", "run", "simulate", o
 
 Rules for code generation:
 - Use ONLY built-in MATLAB functions (plot, surf, mesh, fft, disp, fprintf, etc.)
-- Do NOT call LLM, AI, GPT, Claude, MatClaw, or any non-MATLAB function
+- Do NOT call LLM, AI, GPT, Claude, MatBot, or any non-MATLAB function
 - For animations, use drawnow inside loops
 - For projects, put each function in its own .m file; first file is the entry point
 
@@ -346,7 +346,8 @@ def _llm_chat(user_text: str, system: str = MATCLAW_PERSONA,
             model=settings.llm.model,
             system=sys_arg,
             messages=messages,
-            api_key=None,
+            api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
             max_tokens=max_tokens,
         )
         return result or ""
@@ -544,42 +545,36 @@ async def _apply_matlab_headless_figures() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _headless_figure_task
-    # Connect to MATLAB in a background thread to prevent startup hangs
-    logger.info("Connecting to MATLAB session (non-blocking)...")
-    try:
-        await asyncio.to_thread(bridge.start)
-        if bridge.is_healthy():
-            logger.info("MATLAB connected successfully.")
-        else:
-            # Try connecting to any available shared session
-            import matlab.engine as _me  # type: ignore
-            sessions = await asyncio.to_thread(_me.find_matlab)
-            if sessions:
-                bridge.settings.session_name = sessions[0]
-                await asyncio.to_thread(bridge.start)
-                logger.info("Connected to shared MATLAB session: %s", sessions[0])
-            else:
-                logger.warning("No MATLAB session found — bridge will retry on first request.")
-    except Exception as _e:
-        logger.warning("MATLAB startup skipped or failed: %s", _e)
-
-    # Register runtimes now that bridge is live
+    # Register runtimes/tools/daemon first so HTTP can bind even if MATLAB is slow.
     _runtime_registry.register(MatlabRuntime(bridge, _run_matlab_and_collect))
     _runtime_registry.register(PythonRuntime(cwd=str(ROOT), venv_python=sys.executable))
     _runtime_registry.register(ShellRuntime(cwd=str(ROOT)))
-    # Auto-discover pluggable tools
     tool_registry.discover()
-    # Start daemon
     _heartbeat.start()
-    logger.info("MatClaw enterprise daemon started. Runtimes: %s",
+    logger.info("MatBot enterprise daemon started. Runtimes: %s",
                 [r["name"] for r in _runtime_registry.list_runtimes()])
 
-    # Defer headless MATLAB eval until after yield — Uvicorn does not accept connections until yield.
-    async def _headless_after_bind() -> None:
-        await asyncio.sleep(0.05)
-        await _apply_matlab_headless_figures()
+    async def _connect_matlab_bg() -> None:
+        logger.info("Connecting to MATLAB session (background)...")
+        try:
+            await asyncio.to_thread(bridge.start)
+            if bridge.is_healthy():
+                logger.info("MATLAB connected successfully.")
+            else:
+                import matlab.engine as _me  # type: ignore
+                sessions = await asyncio.to_thread(_me.find_matlab)
+                if sessions:
+                    bridge.settings.session_name = sessions[0]
+                    await asyncio.to_thread(bridge.start)
+                    logger.info("Connected to shared MATLAB session: %s", sessions[0])
+                else:
+                    logger.warning("No MATLAB session found — bridge will retry on first request.")
+        except Exception as _e:
+            logger.warning("MATLAB startup skipped or failed: %s", _e)
+        if bridge.is_healthy():
+            await _apply_matlab_headless_figures()
 
-    _headless_figure_task = asyncio.create_task(_headless_after_bind())
+    _headless_figure_task = asyncio.create_task(_connect_matlab_bg())
 
     yield
 
@@ -589,11 +584,11 @@ async def lifespan(app: FastAPI):
             await _headless_figure_task
     _headless_figure_task = None
     _heartbeat.stop()
-    logger.info("MatClaw daemon stopped.")
+    logger.info("MatBot daemon stopped.")
 
 
 # ── app ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title="MatClaw API", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="MatBot API", version="2.0.0", lifespan=lifespan)
 
 # Initialize subsystems
 agent_registry = AgentRegistry()
@@ -1221,7 +1216,10 @@ async def smart_generate(req: SmartGenRequest):
             provider=settings.llm.provider,
             model=settings.llm.model,
             system=system,
-            messages=[{"role": "user", "content": user_msg}]
+            messages=[{"role": "user", "content": user_msg}],
+            api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
+            max_tokens=4096,
         )
 
     try:
@@ -1285,6 +1283,8 @@ async def optimize_prompt(req: OptimizePromptReq):
             system=system,
             messages=[{"role": "user", "content": req.prompt}],
             api_key=settings.llm.api_key,
+            base_url=getattr(settings.llm, "base_url", None),
+            max_tokens=4096,
         )
     try:
         result = await asyncio.to_thread(_call)
@@ -1398,6 +1398,8 @@ async def run_pipeline_endpoint(pipeline_id: str):
                             system=agent_system + "\n\nRespond ONLY with a fenced MATLAB code block.",
                             messages=[{"role": "user", "content": task_text}],
                             api_key=settings.llm.api_key,
+                            base_url=getattr(settings.llm, "base_url", None),
+                            max_tokens=4096,
                         )
                         code_blocks = re.findall(r"```(?:matlab)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
                         generated_code = code_blocks[-1].strip() if code_blocks else _extract_code_from_reasoning(raw)
@@ -1415,6 +1417,8 @@ async def run_pipeline_endpoint(pipeline_id: str):
                             system=agent_system,
                             messages=[{"role": "user", "content": task_text}],
                             api_key=settings.llm.api_key,
+                            base_url=getattr(settings.llm, "base_url", None),
+                            max_tokens=4096,
                         )
 
                     node_results[node_id] = agent_result
@@ -1560,6 +1564,7 @@ def _activate_runtime(m: ModelConfig):
     settings.llm.provider = m.provider
     settings.llm.model = m.model
     settings.llm.api_key = m.api_key
+    settings.llm.base_url = m.base_url
 
 @app.get("/api/settings/active-model")
 def get_active_model():
@@ -1673,14 +1678,24 @@ async def run_nl(req: RunRequest):
             code = plan.get("code") or ""
             # Strip markdown fences if LLM wrapped them
             code = re.sub(r"```(?:matlab)?\s*|\s*```", "", code).strip()
+            _truncated = bool(code) and code.rstrip().endswith(
+                ("=", "(", "[", "{", ",", "\\", "'", '"')
+            )
+            if (not code) or _truncated:
+                rescued = _extract_code_from_reasoning(
+                    f"{reply or ''}\n{raw_resp or ''}"
+                )
+                if rescued and len(rescued) > len(code or ""):
+                    code = rescued
+                    _truncated = False
 
             # Fallback to curated demo library
-            if not code:
+            if (not code) or _truncated:
                 code = find_demo(req.effective_text) or ""
 
             # Guard against hallucinated functions
             if code:
-                bad = [r"\bLLM\b", r"\bAI\s*\(", r"\bMatClaw\s*\(", r"\bClaude\s*\("]
+                bad = [r"\bLLM\b", r"\bAI\s*\(", r"\bMatBot\s*\(", r"\bClaude\s*\("]
                 if any(re.search(p, code, re.IGNORECASE) for p in bad):
                     code = find_demo(req.effective_text) or ""
 
@@ -1688,6 +1703,16 @@ async def run_nl(req: RunRequest):
                 exec_output, plots = await asyncio.to_thread(
                     _run_matlab_and_collect, code, req.effective_text
                 )
+                if (
+                    not plots
+                    and _classify_intent(req.effective_text) == "visualization"
+                ):
+                    demo = find_demo(req.effective_text) or ""
+                    if demo and demo.strip() != code.strip():
+                        code = demo
+                        exec_output, plots = await asyncio.to_thread(
+                            _run_matlab_and_collect, code, req.effective_text
+                        )
                 # Blend conversational reply with execution result
                 if reply and exec_output and not exec_output.startswith("MATLAB error"):
                     output = reply
@@ -2016,7 +2041,8 @@ async def run_nl_stream(req: RunRequest):
                     model=settings.llm.model,
                     system=sys_arg,
                     messages=messages,
-                    api_key=None,
+                    api_key=settings.llm.api_key,
+                    base_url=getattr(settings.llm, "base_url", None),
                     max_tokens=8192,
                 ):
                     if chunk["type"] == "thinking":
@@ -2134,10 +2160,28 @@ async def run_nl_stream(req: RunRequest):
             if action == "run_matlab":
                 code = plan.get("code") or ""
                 code = re.sub(r"```(?:matlab)?\s*|\s*```", "", code).strip()
+                # Rescue code buried in reply/thinking when JSON `code` was empty
+                # or truncated mid-token (common with slow/Qwen completions).
+                _truncated = bool(code) and code.rstrip().endswith(
+                    ("=", "(", "[", "{", ",", "\\", "'", '"')
+                )
+                if (not code) or _truncated:
+                    rescued = _extract_code_from_reasoning(
+                        "\n".join([
+                            str(plan.get("reply") or ""),
+                            accumulated_thinking or "",
+                            raw or "",
+                        ])
+                    )
+                    if rescued and len(rescued) > len(code or ""):
+                        code = rescued
+                        _truncated = False
                 if code:
                     code = _sanitize_matlab_code(code)
-                if not code:
-                    code = find_demo(req.effective_text) or ""
+                if (not code) or _truncated:
+                    demo = find_demo(req.effective_text) or ""
+                    if demo:
+                        code = demo
 
                 if code:
                     # ── StaticAnalyzer pre-check ──────────────────────────
@@ -2165,6 +2209,32 @@ async def run_nl_stream(req: RunRequest):
                             break
                         yield ": keepalive\n\n"
                     exec_output, plots = await _mat_task
+
+                    # Visualization requests must return a PNG — fall back to a
+                    # known-good demo if the LLM script produced no figure.
+                    if (
+                        not plots
+                        and _classify_intent(req.effective_text) == "visualization"
+                    ):
+                        demo = find_demo(req.effective_text) or ""
+                        if demo and demo.strip() != code.strip():
+                            yield _sse("tool_start", {
+                                "action": "run_matlab",
+                                "label": "Retrying with known-good plot script...",
+                            })
+                            code = demo
+                            _mat_task = asyncio.create_task(
+                                asyncio.to_thread(
+                                    _run_matlab_and_collect, code, req.effective_text
+                                )
+                            )
+                            while not _mat_task.done():
+                                _done, _ = await asyncio.wait([_mat_task], timeout=12.0)
+                                if _mat_task in _done:
+                                    break
+                                yield ": keepalive\n\n"
+                            exec_output, plots = await _mat_task
+
                     yield _sse("tool_result", {
                         "output": exec_output,
                         "plots": plots,
@@ -2330,7 +2400,7 @@ async def run_nl_stream(req: RunRequest):
                             router.agent_registry.get_agent(node.agent_id)
                             if node.agent_id else None
                         )
-                        agent_label = agent_def.name if agent_def else (node.agent_id or "MatClaw")
+                        agent_label = agent_def.name if agent_def else (node.agent_id or "MatBot")
                         yield _sse("tool_start", {
                             "action": "swarm_step",
                             "label": f"[{agent_label}] {node.description}",
@@ -2634,7 +2704,7 @@ def get_audit_log(limit: int = 100):
 @app.post("/api/gateway/webhook")
 async def webhook_gateway(req: WebhookRequest):
     """
-    Generic inbound webhook — routes any text message through the MatClaw NL pipeline.
+    Generic inbound webhook — routes any text message through the MatBot NL pipeline.
     Slack slash commands, Discord webhooks, n8n, Zapier can all POST here.
     """
     request_id = str(uuid.uuid4())

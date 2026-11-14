@@ -1,5 +1,5 @@
 """
-Memory consolidation engine for MatClaw long-term knowledge.
+Memory consolidation engine for MatBot long-term knowledge.
 
 Two consolidation modes:
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CONSOLIDATION_SYSTEM = """You are a senior control-systems engineer analysing
-experimental results for an autonomous MATLAB lab assistant called MatClaw.
+experimental results for an autonomous MATLAB lab assistant called MatBot.
 
 Given a list of experiments (parameters, metrics, status), extract:
 1. **lessons** — cause→effect observations (e.g. "Lowering Kd reduced oscillation").

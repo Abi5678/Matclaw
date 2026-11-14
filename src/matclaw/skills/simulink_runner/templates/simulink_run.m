@@ -1,4 +1,4 @@
-% MatClaw_Header: Simulink Runner template
+% MatBot_Header: Simulink Runner template
 % Load-Compile-Run: load_system -> set_param -> sim
 % Returns scalar struct for Python engine (no arrays/cells).
 function out = simulink_run(model_name, stop_time)

@@ -15,7 +15,7 @@ function resolveTheme(mode: ThemeMode, systemPref: 'light' | 'dark'): ResolvedTh
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = useState<ThemeMode>(() => {
-    const saved = localStorage.getItem('matclaw-theme') as ThemeMode
+    const saved = localStorage.getItem('matbot-theme') as ThemeMode
     return saved || 'deep-blue'
   })
 
@@ -24,7 +24,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const resolved = useMemo(() => resolveTheme(mode, systemPref), [mode, systemPref])
 
   useEffect(() => {
-    localStorage.setItem('matclaw-theme', mode)
+    localStorage.setItem('matbot-theme', mode)
     document.documentElement.setAttribute('data-theme', resolved)
   }, [mode, resolved])
 

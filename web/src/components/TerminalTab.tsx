@@ -2,8 +2,9 @@ import { useEffect, useRef } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
+import { getApiWsBase } from '../lib/apiBase'
 
-const API_WS = 'ws://localhost:8000/api/terminal'
+const API_WS = `${getApiWsBase()}/api/terminal`
 
 export default function TerminalTab() {
   const terminalRef = useRef<HTMLDivElement>(null)

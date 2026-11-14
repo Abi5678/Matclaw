@@ -74,7 +74,7 @@ def analyze_matlab_run(
 
     if re.match(r"^\s*function\s+\w+", (code or "").strip()):
         notes.append(
-            "Code starts with a named function — in MatClaw temp files the function name "
+            "Code starts with a named function — in MatBot temp files the function name "
             "must match the filename or you should use a plain script + local functions."
         )
 
@@ -84,7 +84,7 @@ def analyze_matlab_run(
 
     if _plot_count_from_code(code or "") > 1:
         notes.append(
-            "Multiple `figure` calls — MatClaw may only surface the first figure in the UI; "
+            "Multiple `figure` calls — MatBot may only surface the first figure in the UI; "
             "prefer subplot/tiledlayout in one figure."
         )
 

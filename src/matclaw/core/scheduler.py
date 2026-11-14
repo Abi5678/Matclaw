@@ -1,5 +1,5 @@
 """
-Background cron scheduler for MatClaw.
+Background cron scheduler for MatBot.
 Builds on the existing JobManager infrastructure.
 """
 from __future__ import annotations
@@ -119,7 +119,7 @@ class Scheduler:
             return
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._tick_loop, name="matclaw-scheduler", daemon=True
+            target=self._tick_loop, name="matbot-scheduler", daemon=True
         )
         self._thread.start()
         logger.info("Scheduler started (heartbeat=%.0fs)", self._heartbeat)

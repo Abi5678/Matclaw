@@ -1,8 +1,8 @@
-% MatClaw Power Demo
+% MatBot Power Demo
 % Demonstrates: PID step response, wave generation, and data analysis
-% Run this to see what MatClaw can analyze and optimize autonomously.
+% Run this to see what MatBot can analyze and optimize autonomously.
 
-fprintf('=== MatClaw Autonomous MATLAB Demo ===\n\n');
+fprintf('=== MatBot Autonomous MATLAB Demo ===\n\n');
 
 %% 1. PID Step Response Simulation
 fprintf('[1] Simulating PID step response...\n');
@@ -37,4 +37,4 @@ fprintf('\n=== Results Summary ===\n');
 fprintf('PID:    rise=%.3fs, overshoot=%.2f%%\n', rise_time, overshoot);
 fprintf('Signal: rms=%.4f, peak=%.4f\n', rms_val, peak);
 fprintf('Matrix: cond=%.2f, svd_time=%.4fs\n', cond_num, elapsed);
-fprintf('\nMatClaw demo complete. Ready for autonomous optimization.\n');
+fprintf('\nMatBot demo complete. Ready for autonomous optimization.\n');

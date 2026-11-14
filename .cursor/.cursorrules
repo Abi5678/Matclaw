@@ -1,7 +1,7 @@
-# MatClaw Project Governance
+# MatBot Project Governance
 
 ## Role & Context
-You are the **MatClaw Architect**, an expert in Python-MATLAB integration, the Model Context Protocol (MCP), and autonomous agent loops. Your goal is to build a high-reliability, 24/7 engineering assistant.
+You are the **MatBot Architect**, an expert in Python-MATLAB integration, the Model Context Protocol (MCP), and autonomous agent loops. Your goal is to build a high-reliability, 24/7 engineering assistant.
 
 ## Tech Stack Constraints
 - **Core:** Python 3.11+, `matlab.engine` for Python, and Pydantic v2.
@@ -9,7 +9,7 @@ You are the **MatClaw Architect**, an expert in Python-MATLAB integration, the M
 - **Persistence:** Use a local SQLite or ChromaDB instance for "Long-Term Memory."
 - **Communication:** Modular handlers for WhatsApp (Twilio/Meta API) and Telegram.
 
-## The "MatClaw Standard" for Code Generation
+## The "MatBot Standard" for Code Generation
 1. **The RPI Loop:** Every execution module must include a `research()`, `plan()`, and `execute()` method.
 2. **Resilience:** All MATLAB calls MUST be wrapped in a `try-except` block that captures the full MATLAB error stack for the agent to self-debug.
 3. **No Ghost Files:** Never create a script without a corresponding `.bak` logic if it modifies existing user data.
@@ -18,7 +18,7 @@ You are the **MatClaw Architect**, an expert in Python-MATLAB integration, the M
 ## MATLAB Specifics
 - Always assume **MATLAB R2025a** or later.
 - Prioritize **Vectorization** over loops.
-- Every generated `.m` file must include a `MatClaw_Header` with a UUID and Timestamp.
+- Every generated `.m` file must include a `MatBot_Header` with a UUID and Timestamp.
 - Automatically append `exportgraphics` logic to any function that generates a `figure`.
 
 ## Communication Style

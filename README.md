@@ -1,6 +1,6 @@
-# MatClaw — Autonomous Agentic OS for MATLAB
+# MatBot — Autonomous Agentic OS for MATLAB
 
-**MatClaw is the first Autonomous Agentic OS for MATLAB engineers.** It runs a persistent Research–Plan–Implement (RPI) loop: it researches context from long-term memory, plans actions, and executes them against a live MATLAB kernel—with self-correction, file-triggered sentry, and remote control via Telegram. All autonomous actions are recorded in `LAB_JOURNAL.md`, the single source of truth for the lab.
+**MatBot is the first Autonomous Agentic OS for MATLAB engineers.** It runs a persistent Research–Plan–Implement (RPI) loop: it researches context from long-term memory, plans actions, and executes them against a live MATLAB kernel—with self-correction, file-triggered sentry, and remote control via Telegram. All autonomous actions are recorded in `LAB_JOURNAL.md`, the single source of truth for the lab.
 
 ---
 
@@ -17,7 +17,7 @@
 
 ## Architecture
 
-MatClaw is built for a **multi-agent** workflow: an **Architect** (orchestrator), **Researcher** (context + memory), **Coder** (MATLAB execution), and **Reviewer** (validation and rollback). The **Model Context Protocol (MCP)** layer exposes tools and resources so LLM clients can drive the MATLAB kernel—run code, query memory, trigger skills, and read status. The daemon keeps the MATLAB bridge warm, the Sentry watching `data_in`, and the RPI executor ready for skill runs and HITL-gated long jobs. `LAB_JOURNAL.md` logs every Sentry-triggered run with timestamps and artifact links; it is the authoritative record of what MatClaw did and when.
+MatBot is built for a **multi-agent** workflow: an **Architect** (orchestrator), **Researcher** (context + memory), **Coder** (MATLAB execution), and **Reviewer** (validation and rollback). The **Model Context Protocol (MCP)** layer exposes tools and resources so LLM clients can drive the MATLAB kernel—run code, query memory, trigger skills, and read status. The daemon keeps the MATLAB bridge warm, the Sentry watching `data_in`, and the RPI executor ready for skill runs and HITL-gated long jobs. `LAB_JOURNAL.md` logs every Sentry-triggered run with timestamps and artifact links; it is the authoritative record of what MatBot did and when.
 
 ---
 
@@ -33,9 +33,9 @@ MatClaw is built for a **multi-agent** workflow: an **Architect** (orchestrator)
    ```bash
    cd $MATLABROOT/extern/engines/python
    python setup.py bdist_wheel
-   cp dist/matlab_engine*.whl /path/to/MatClaw/wheels/
+   cp dist/matlab_engine*.whl /path/to/Matclaw/wheels/
    ```
-   **Note:** `$MATLABROOT` is your MATLAB installation root (e.g. `/usr/local/MATLAB/R2024a`). The wheel is under `extern/engines/python`. Uncomment the wheel `COPY` and `pip install` block in the Dockerfile if you run MatClaw in Docker.
+   **Note:** `$MATLABROOT` is your MATLAB installation root (e.g. `/usr/local/MATLAB/R2024a`). The wheel is under `extern/engines/python`. Uncomment the wheel `COPY` and `pip install` block in the Dockerfile if you run MatBot in Docker.
 
 3. **Launch the stack:**
    ```bash
@@ -53,27 +53,27 @@ Skills live under **`src/matclaw/skills/`**. Each skill is a folder:
 - **`logic.py`** — Python bridge exposing `research()`, `plan()`, `execute()`, and a one-shot `run()`; uses `MatlabBridge` and Pydantic.
 - **`templates/`** — Predefined `.m` (or `.mlx`) scripts the skill adds to the MATLAB path and invokes.
 
-To teach MatClaw a new engineering domain: add a folder `src/matclaw/skills/<skill_name>/`, write **SKILL.md** (purpose, when to use, I/O, constraints, RPI steps), implement **logic.py** with `research` / `plan` / `execute` / `run`, and drop any MATLAB templates into **templates/**. The daemon discovers skills via `list_skills()` and loads instructions with `get_skill_instructions(skill_name)`; the RPI executor and Sentry can then invoke the new skill by name. No core code changes required—extend by adding a new skill directory and its SKILL.md.
+To teach MatBot a new engineering domain: add a folder `src/matclaw/skills/<skill_name>/`, write **SKILL.md** (purpose, when to use, I/O, constraints, RPI steps), implement **logic.py** with `research` / `plan` / `execute` / `run`, and drop any MATLAB templates into **templates/**. The daemon discovers skills via `list_skills()` and loads instructions with `get_skill_instructions(skill_name)`; the RPI executor and Sentry can then invoke the new skill by name. No core code changes required—extend by adding a new skill directory and its SKILL.md.
 
 ---
 
 ## Lab Journal
 
-All autonomous actions (Sentry-triggered runs, artifact links) are appended to **`LAB_JOURNAL.md`** (config: `lab_journal.path`). Each line follows: `- **YYYY-MM-DD HH:MM AM/PM** — {summary} — [artifact1](path) [artifact2](path)`. Treat it as the source of truth for what MatClaw did and which files it used.
+All autonomous actions (Sentry-triggered runs, artifact links) are appended to **`LAB_JOURNAL.md`** (config: `lab_journal.path`). Each line follows: `- **YYYY-MM-DD HH:MM AM/PM** — {summary} — [artifact1](path) [artifact2](path)`. Treat it as the source of truth for what MatBot did and which files it used.
 
 ---
 
 ## NVIDIA Nemotron & NeMo Agent Toolkit
 
-MatClaw supports **NVIDIA Nemotron** for NL routing (Telegram natural language) and **NVIDIA NeMo Agent Toolkit (NAT)** for powerful ReAct-style agents that use MatClaw's MCP tools.
+MatBot supports **NVIDIA Nemotron** for NL routing (Telegram natural language) and **NVIDIA NeMo Agent Toolkit (NAT)** for powerful ReAct-style agents that use MatBot's MCP tools.
 
 ### Nemotron LLM (default)
 Set `NVIDIA_API_KEY` in `.env`. The NL router uses Nemotron for intent classification. Configure via `MATCLAW_LLM__PROVIDER=nvidia` and `MATCLAW_LLM__MODEL=nvidia/nvidia-nemotron-nano-9b-v2`.
 
 ### NeMo Agent Toolkit (NAT)
-Use NAT as an MCP client to drive MatClaw with ReAct reasoning:
+Use NAT as an MCP client to drive MatBot with ReAct reasoning:
 
-1. **Start MatClaw MCP server** (HTTP mode):
+1. **Start MatBot MCP server** (HTTP mode):
    ```bash
    python -m src.matclaw.mcp.server --http
    # Server: http://127.0.0.1:9901/mcp
@@ -93,7 +93,7 @@ Use NAT as an MCP client to drive MatClaw with ReAct reasoning:
    nat serve --config_file workflows/nat_matclaw_mcp.yml
    ```
 
-The workflow (`workflows/nat_matclaw_mcp.yml`) connects NAT to MatClaw's MCP tools: `run_matlab_code`, `trigger_skill`, `run_workspace_auditor`, `run_pid_optimizer`, `run_report_generator`, `list_available_skills`.
+The workflow (`workflows/nat_matclaw_mcp.yml`) connects NAT to MatBot's MCP tools: `run_matlab_code`, `trigger_skill`, `run_workspace_auditor`, `run_pid_optimizer`, `run_report_generator`, `list_available_skills`.
 
 ---
 
@@ -107,7 +107,7 @@ The workflow (`workflows/nat_matclaw_mcp.yml`) connects NAT to MatClaw's MCP too
 ## Project Progress & Next Updates
 
 - **Current progress**
-  - Core MatClaw architecture is in place: multi-agent RPI loop, MATLAB bridge, Sentry, HITL, and lab journal wiring.
+  - Core MatBot architecture is in place: multi-agent RPI loop, MATLAB bridge, Sentry, HITL, and lab journal wiring.
   - Streamlit UI (`src/matclaw/ui/app.py`) is running against the Python 3.11 virtual environment.
   - MCP server and NVIDIA Nemotron / NeMo Agent Toolkit integration are wired via `pyproject.toml` and `workflows/nat_matclaw_mcp.yml`.
 - **Next near-term updates**

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Bot, Plus, Trash2, Wand2, Terminal, Code, BookOpen, Globe, Layout, X, Sparkles } from 'lucide-react'
+import { getApiBase } from '../lib/apiBase'
 
 // Tools available for agents
 const AVAILABLE_TOOLS = [
@@ -11,7 +12,7 @@ const AVAILABLE_TOOLS = [
   { id: 'run_matlab', label: 'MATLAB Bridge', description: 'Execute rigorous scientific functions natively on the local MATLAB engine', icon: Code }
 ]
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 interface Agent {
   id: string

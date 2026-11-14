@@ -3,10 +3,10 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "matclaw"
+name = "matbot"
 version = "0.1.0"
-description = "High-end autonomous agent bridge for MATLAB via MCP."
-authors = [{ name = "MatClaw", email = "dev@matclaw.local" }]
+description = "MatBot — high-end autonomous agent bridge for MATLAB via MCP."
+authors = [{ name = "MatBot", email = "dev@matbot.local" }]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111.0",
@@ -38,9 +38,12 @@ dependencies = [
 ]
 
 [project.scripts]
-matclaw-mcp = "matclaw.mcp.server:main"
-matclaw-server = "matclaw.api.main:main"
+matbot = "matclaw.cli.main:main"
+matbot-server = "matclaw.api.main:main"
+matbot-mcp = "matclaw.mcp.server:main"
 matclaw = "matclaw.cli.main:main"
+matclaw-server = "matclaw.api.main:main"
+matclaw-mcp = "matclaw.mcp.server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -50,4 +53,3 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

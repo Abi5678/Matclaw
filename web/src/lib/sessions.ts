@@ -1,6 +1,7 @@
+import { getApiBase } from './apiBase'
 // ── Session persistence (localStorage + server write-through) ────────────────
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 /** Fire-and-forget sync to backend. Never throws. */
 function _syncToServer(session: Session): void {
@@ -124,8 +125,8 @@ export interface Session {
   messages: Message[]
 }
 
-const SESSIONS_KEY = 'matclaw_sessions'
-const ACTIVE_KEY   = 'matclaw_active_session'
+const SESSIONS_KEY = 'matbot_sessions'
+const ACTIVE_KEY   = 'matbot_active_session'
 
 // ── persistence helpers ──────────────────────────────────────────────────────
 

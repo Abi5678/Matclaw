@@ -1,17 +1,17 @@
 """
-matclaw CLI — talks to the MatClaw server via REST/SSE.
+matbot CLI — talks to the MatBot server via REST/SSE (alias: matclaw).
 
 Usage:
-  matclaw run "plot a sine wave"
-  matclaw matlab "x=1:10; plot(x)"
-  matclaw python "print('hello')"
-  matclaw shell "ls -la"
-  matclaw status
-  matclaw schedule list
-  matclaw schedule add --name "audit" --cron "0 * * * *" --runtime shell --command "echo audit"
-  matclaw tools list
-  matclaw agents list
-  matclaw audit
+  matbot run "plot a sine wave"
+  matbot matlab "x=1:10; plot(x)"
+  matbot python "print('hello')"
+  matbot shell "ls -la"
+  matbot status
+  matbot schedule list
+  matbot schedule add --name "audit" --cron "0 * * * *" --runtime shell --command "echo audit"
+  matbot tools list
+  matbot agents list
+  matbot audit
 """
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def _post_stream(endpoint: str, payload: dict) -> None:
                             pass
         click.echo()
     except httpx.ConnectError:
-        click.echo(f"Cannot connect to MatClaw server at {SERVER}", err=True)
+        click.echo(f"Cannot connect to MatBot server at {SERVER}", err=True)
         click.echo("Start the server with: matclaw-server", err=True)
         sys.exit(1)
 
@@ -78,9 +78,9 @@ def _post_stream(endpoint: str, payload: dict) -> None:
 # ── CLI root ───────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("0.1.0", prog_name="matclaw")
+@click.version_option("0.1.0", prog_name="matbot")
 def cli():
-    """MatClaw — Autonomous Agent Platform for Engineering"""
+    """MatBot — Autonomous Agent Platform for Engineering"""
 
 
 # ── Run commands ───────────────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ def schedule_list():
     r = httpx.get(f"{SERVER}/api/scheduler/tasks", headers=_headers(), timeout=10)
     tasks = r.json()
     if not tasks:
-        click.echo("No scheduled tasks. Add one with: matclaw schedule add")
+        click.echo("No scheduled tasks. Add one with: matbot schedule add")
         return
     click.echo(f"{'ENABLED':<8} {'ID':<10} {'NAME':<24} {'CRON':<20} {'RUNTIME':<10} LAST")
     click.echo("-" * 90)
@@ -342,7 +342,7 @@ def main():
     # Ensure the project root is in sys.path so `src.matclaw.*` imports resolve
     # when the CLI is invoked from anywhere (not just the project directory).
     import sys, pathlib
-    _project_root = pathlib.Path(__file__).resolve().parents[4]  # …/MatClaw
+    _project_root = pathlib.Path(__file__).resolve().parents[4]  # …/MatClaw (import path: src.matclaw)
     _project_root_str = str(_project_root)
     if _project_root_str not in sys.path:
         sys.path.insert(0, _project_root_str)

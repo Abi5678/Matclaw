@@ -4,7 +4,7 @@ from .base_config import (
     HITLSettings,
     LabJournalSettings,
     LoggingSettings,
-    MatClawSettings,
+    MatBotSettings,
     MatlabSettings,
     MemorySettings,
     SentrySettings,
@@ -15,7 +15,7 @@ from .base_config import (
 )
 
 __all__ = [
-    "MatClawSettings",
+    "MatBotSettings",
     "MatlabSettings",
     "MemorySettings",
     "DaemonSettings",

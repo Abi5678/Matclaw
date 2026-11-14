@@ -137,7 +137,7 @@ def expand_prompt_to_goal(
         f"Long-horizon goal inferred: {long_horizon}\n"
         f"{workspace_summary}\n"
         f"Recent memory hints: " + ("; ".join(memory_snips) if memory_snips else "(none)") + "\n\n"
-        f"Please execute the inferred goal using MatClaw's RPI loop."
+        f"Please execute the inferred goal using MatBot's RPI loop."
     )
 
     confidence = 0.6 if inferred else 0.45

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from src.matclaw.config.base_config import MatClawSettings
+    from src.matclaw.config.base_config import MatBotSettings
     from src.matclaw.core.experiment import ExperimentTracker
 
 from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
@@ -443,7 +443,7 @@ class RPIExecutor:
         *,
         chat_id: int | None = None,
         conversation_buffer: list[dict[str, str]] | None = None,
-        settings: MatClawSettings | None = None,
+        settings: MatBotSettings | None = None,
     ) -> Any:
         """
         Research–Plan–Implement from a hybrid natural-language prompt (e.g. voice + clipboard).
@@ -455,16 +455,16 @@ class RPIExecutor:
             hybrid_prompt: Full prompt, e.g. "Context: ...\\nCode Snippet: ...".
             chat_id: Optional Telegram/chat id for HITL gating (same as ``run_rpi``).
             conversation_buffer: Optional prior turns for ``route_nl_message``.
-            settings: Application settings; if omitted, loads default ``MatClawSettings``.
+            settings: Application settings; if omitted, loads default ``MatBotSettings``.
 
         Returns:
             Skill result, MATLAB output string, memory query string, or pending-HITL dict.
         """
-        from src.matclaw.config.base_config import MatClawSettings
+        from src.matclaw.config.base_config import MatBotSettings
         from src.matclaw.gateways.nl_router import resolve_skill_from_nl, route_nl_message
         from src.matclaw.skills import list_skills
 
-        cfg = settings or MatClawSettings()
+        cfg = settings or MatBotSettings()
         if self._on_start is not None:
             try:
                 self._on_start("run_flow", "nl_router")

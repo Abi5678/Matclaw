@@ -153,7 +153,7 @@ class SentryWatchdog:
             try:
                 journal_path.parent.mkdir(parents=True, exist_ok=True)
                 journal_path.write_text(
-                    "# MatClaw Lab Journal\n\nAuto-generated log of sentry-triggered runs and artifacts.\n\n",
+                    "# MatBot Lab Journal\n\nAuto-generated log of sentry-triggered runs and artifacts.\n\n",
                     encoding="utf-8",
                 )
             except Exception:

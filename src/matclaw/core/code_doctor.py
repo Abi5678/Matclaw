@@ -291,14 +291,14 @@ def diagnose(
                     description=f"Task requires base MATLAB only but code uses {label}.",
                 ))
 
-    # ── Top-level function in temp script (MatClaw) ─────────────────────────
+    # ── Top-level function in temp script (MatBot) ─────────────────────────
     stripped = (code or "").strip()
     if stripped.startswith("function ") or re.match(r"^function\s+\w+", stripped):
         result.issues.append(Issue(
             type="matlab_top_level_named_function",
             severity="warning",
             description=(
-                "Code begins with `function name(...)`. In MatClaw the temp .m filename won't match; "
+                "Code begins with `function name(...)`. In MatBot the temp .m filename won't match; "
                 "use a script body or rename the primary function to match the runner. "
                 "CodeDoctor can strip the leading `function ...` line when auto-fixing."
             ),
@@ -381,19 +381,19 @@ def apply_fixes(code: str, diagnosis: DiagnosisResult) -> tuple[str, list[str]]:
                       lambda m: m.group(1) + '  ' + m.group(2), code)
         fixes_applied.append(r"Flattened literal `\n` in MATLAB strings to spaces (use sprintf for newlines)")
 
-    # ── Fix: remove leading function line for MatClaw script temp files ─────
+    # ── Fix: remove leading function line for MatBot script temp files ─────
     if "matlab_top_level_named_function" in issue_types:
         new_code = re.sub(r"^\s*function\s+\w+[^\n]*\n", "", code, count=1, flags=re.MULTILINE)
         if new_code != code:
             code = new_code
             fixes_applied.append(
-                "Removed leading `function ...` line so the file runs as a script in MatClaw temp execution"
+                "Removed leading `function ...` line so the file runs as a script in MatBot temp execution"
             )
 
     # ── Fix: runtime_error — wrap in try/catch so error is readable ──────────
     if "runtime_error" in issue_types and not fixes_applied:
         if not re.match(r'^\s*try\b', code, re.IGNORECASE):
-            code = "try\n" + code + "\ncatch ME\n  fprintf('MatClaw runtime error: %s\\n', ME.message);\nend\n"
+            code = "try\n" + code + "\ncatch ME\n  fprintf('MatBot runtime error: %s\\n', ME.message);\nend\n"
             fixes_applied.append("Wrapped code in try/catch to surface the exact MATLAB runtime error message")
 
     # ── Fix: blank_plot or low_content when no other fix was found ───────────

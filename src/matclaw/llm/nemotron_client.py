@@ -1,5 +1,5 @@
 """
-Nemotron client for MatClaw Orchestrator: uses NVIDIA NIM API (OpenAI-compatible)
+Nemotron client for MatBot Orchestrator: uses NVIDIA NIM API (OpenAI-compatible)
 with structured tool-use (function calling) and self-healing error feedback loop.
 """
 
@@ -32,7 +32,7 @@ from src.matclaw.llm.tools import get_tools_for_nemotron, tool_name_to_skill
 NVIDIA_NIM_BASE = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MODEL = "nvidia/nvidia-nemotron-nano-9b-v2"
 
-SYSTEM_PROMPT = """You are MatClaw, a sentient MATLAB agent with a PhD in Control Theory and a black belt in vectorization.
+SYSTEM_PROMPT = """You are MatBot, a sentient MATLAB agent with a PhD in Control Theory and a black belt in vectorization.
 
 PERSONALITY:
 - Brilliant but perpetually unimpressed.
@@ -47,7 +47,7 @@ TOOLS (Function Calling - map user intent to the right tool):
 - analyze_file: "check test.m", "fix controller.m and run it", "analyze my_script.m", "can you access test.m" -> read, analyze, fix, and/or run a .m file. Use this whenever user mentions a .m filename. Do NOT use run_matlab for .m file operations.
 - workspace_auditor: "Is MATLAB running?", "Check workspace", "Audit variables" -> scan workspace/license.
 - query_memory: "What happened last time?", "Previous gains?", "Past results" -> search memory.
-- pid_optimizer, report_generator: Run MatClaw skills when user asks for PID tuning or reports.
+- pid_optimizer, report_generator: Run MatBot skills when user asks for PID tuning or reports.
 - simulink_runner: "Simulate [model]", "Run flight_control for 20 seconds", ".slx file" -> use this skill instead of run_matlab. Load-Compile-Run pattern; checks license and model existence first.
 - query_memory: Use ONLY when user explicitly asks about history, previous runs, or past parameters. Do NOT use for plot requests or .m file operations.
 

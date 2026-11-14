@@ -51,7 +51,11 @@ def resolve_api_key(provider: str, api_key: str | None = None) -> str | None:
     if p == "google":
         return os.environ.get("GOOGLE_API_KEY")
     if p == "openai-compatible":
-        return None  # must be passed explicitly
+        # Prefer explicit arg; else common env names used for local/tunnel endpoints.
+        return (
+            os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("MATCLAW_LLM__API_KEY")
+        )
     if p == "anthropic":
         return os.environ.get("ANTHROPIC_API_KEY")
     import logging as _log
@@ -235,7 +239,12 @@ def call_chat_completion(
                 content = (resp.choices[0].message.content if resp.choices else "") or ""
                 # For reasoning models: if content is empty, use reasoning trace
                 if not content.strip() and resp.choices:
-                    reasoning = getattr(resp.choices[0].message, "reasoning_content", None) or ""
+                    _msg = resp.choices[0].message
+                    reasoning = (
+                        getattr(_msg, "reasoning_content", None)
+                        or getattr(_msg, "reasoning", None)
+                        or ""
+                    )
                     if reasoning:
                         # First try to extract a JSON block (for structured responses)
                         json_match = _re.search(r"\{[^{}]*\"reply\"[^{}]*\}", reasoning, _re.DOTALL)
@@ -264,7 +273,27 @@ def call_chat_completion(
                     messages=openai_messages,
                     max_tokens=max_tokens,
                 )
-                return (resp.choices[0].message.content if resp.choices else "").strip()
+                content = (resp.choices[0].message.content if resp.choices else "") or ""
+                # Reasoning models (e.g. Nemotron on vLLM) may leave content empty.
+                if not content.strip() and resp.choices:
+                    msg = resp.choices[0].message
+                    reasoning = (
+                        getattr(msg, "reasoning_content", None)
+                        or getattr(msg, "reasoning", None)
+                        or ""
+                    )
+                    if reasoning:
+                        json_match = _re.search(r"\{[^{}]*\"reply\"[^{}]*\}", reasoning, _re.DOTALL)
+                        if json_match:
+                            content = json_match.group()
+                        else:
+                            code = _extract_code_from_reasoning(reasoning)
+                            if code:
+                                content = code
+                            else:
+                                paragraphs = [para.strip() for para in reasoning.split("\n\n") if para.strip()]
+                                content = paragraphs[-1] if paragraphs else reasoning
+                return content.strip()
 
             if p == "google":
                 if genai is None:
@@ -345,7 +374,10 @@ async def call_chat_completion_stream(
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
-                reasoning_tok = getattr(delta, "reasoning_content", None)
+                reasoning_tok = (
+                    getattr(delta, "reasoning_content", None)
+                    or getattr(delta, "reasoning", None)
+                )
                 if reasoning_tok:
                     yield {"type": "thinking", "token": reasoning_tok}
                 content_tok = getattr(delta, "content", None)

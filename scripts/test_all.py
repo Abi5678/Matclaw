@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run all MatClaw tests in one go. No manual steps required."""
+"""Run all MatBot tests in one go. No manual steps required."""
 
 import sys
 import os
@@ -26,8 +26,8 @@ def run(name: str, fn):
 def test_matlab_bridge():
     import matlab
     from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
-    from src.matclaw.config.base_config import MatClawSettings
-    s = MatClawSettings()
+    from src.matclaw.config.base_config import MatBotSettings
+    s = MatBotSettings()
     b = MatlabBridge(settings=s.matlab)
     b.start()
     r = b.call(MatlabCallRequest(function='version', args=[], nargout=1))
@@ -39,9 +39,9 @@ def test_matlab_bridge():
 
 def test_workspace_auditor():
     from src.matclaw.matlab.matlab_bridge import MatlabBridge
-    from src.matclaw.config.base_config import MatClawSettings
+    from src.matclaw.config.base_config import MatBotSettings
     from src.matclaw.skills.workspace_auditor.logic import run as run_skill
-    s = MatClawSettings()
+    s = MatBotSettings()
     b = MatlabBridge(settings=s.matlab)
     b.start()
     result = run_skill(b)
@@ -68,7 +68,7 @@ def test_mcp_tools():
     assert isinstance(skills, list) and len(skills) > 0
 
 def main():
-    print("MatClaw automated tests\n" + "=" * 40)
+    print("MatBot automated tests\n" + "=" * 40)
     tests = [
         ("MATLAB bridge (version + roots)", test_matlab_bridge),
         ("Workspace auditor skill", test_workspace_auditor),

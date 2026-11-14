@@ -1,5 +1,5 @@
 """
-MatClaw CLI entrypoint — works from any directory.
+MatBot CLI entrypoint — works from any directory.
 Adds the project root to sys.path before importing the CLI module.
 """
 import sys

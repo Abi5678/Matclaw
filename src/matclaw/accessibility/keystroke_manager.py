@@ -3,7 +3,7 @@ Accessibility & Keystroke Manager (global hotkeys).
 
 Mandate:
   - use pynput to register global hotkeys
-  - Ctrl+Shift+S -> MatClaw Status
+  - Ctrl+Shift+S -> MatBot Status
   - provide intent expansion for vague prompts by combining workspace + memory
 """
 
@@ -28,18 +28,18 @@ except Exception:  # pragma: no cover
 
 @dataclass(frozen=True)
 class HotkeyBindings:
-    """Keystroke bindings for common MatClaw actions."""
+    """Keystroke bindings for common MatBot actions."""
 
     status: str = "ctrl+shift+s"
 
 
 class StatusHotkeyManager:
     """
-    Global hotkey manager for MatClaw status / intent expansion (Ctrl+Shift+S).
+    Global hotkey manager for MatBot status / intent expansion (Ctrl+Shift+S).
 
     For hybrid voice+clipboard RPI triggers use :class:`src.matclaw.gateways.keystroke_manager.KeystrokeManager`.
 
-    This manager is designed to be embedded in a local Python process running MatClaw UI/control.
+    This manager is designed to be embedded in a local Python process running MatBot UI/control.
     It does not assume Telegram availability.
     """
 
@@ -88,11 +88,11 @@ class StatusHotkeyManager:
 
         try:
             if self._match_ctrl_shift_s():
-                logger.info("Keystroke: Ctrl+Shift+S (MatClaw Status)")
+                logger.info("Keystroke: Ctrl+Shift+S (MatBot Status)")
                 if self.on_status is not None:
                     msg = self.on_status()
                     # Default behavior: log.
-                    logger.info("MatClaw Status: %s", msg)
+                    logger.info("MatBot Status: %s", msg)
         except Exception as exc:
             logger.exception("Keystroke handler failed: %s", exc)
 

@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { FolderOpen, ChevronDown, ChevronRight, FileCode2, Play } from 'lucide-react'
 import type { ProjectFile } from '../lib/sessions'
+import { getApiBase } from '../lib/apiBase'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 const LANG_COLORS: Record<string, string> = {
   matlab: 'text-orange-400',

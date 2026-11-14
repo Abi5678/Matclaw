@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { useVoiceInput } from '../hooks/useVoiceInput'
 import { useStreaming } from '../hooks/useStreaming'
 import type { Message, Session } from '../lib/sessions'
+import { getApiBase } from '../lib/apiBase'
 import {
   getOrCreateActiveSession, getSession, saveSession,
   createSession, setActiveSessionId,
@@ -27,7 +28,7 @@ import AgentsTab from './Agents'
 import CodeEditor from '../components/CodeEditor'
 import PipelineCanvas from '../components/PipelineCanvas'
 
-const API = 'http://localhost:8000'
+const API = getApiBase()
 
 type MatlabUiStatus = 'checking' | 'online' | 'busy' | 'offline'
 
@@ -505,37 +506,37 @@ export default function ControlPlane() {
   const [activityTab, setActivityTab] = useState<ActivityTab>('chat')
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('flow')
   const [followMode, setFollowMode] = useState(() => {
-    return localStorage.getItem('matclaw-follow-mode') !== 'false'
+    return localStorage.getItem('matbot-follow-mode') !== 'false'
   })
 
   const toggleFollowMode = useCallback(() => {
     setFollowMode(prev => {
       const next = !prev
-      localStorage.setItem('matclaw-follow-mode', String(next))
+      localStorage.setItem('matbot-follow-mode', String(next))
       return next
     })
   }, [])
 
   const [sentryMode, setSentryMode] = useState(() => {
-    return localStorage.getItem('matclaw-sentry-mode') === 'true'
+    return localStorage.getItem('matbot-sentry-mode') === 'true'
   })
 
   const toggleSentryMode = useCallback(() => {
     setSentryMode(prev => {
       const next = !prev
-      localStorage.setItem('matclaw-sentry-mode', String(next))
+      localStorage.setItem('matbot-sentry-mode', String(next))
       return next
     })
   }, [])
 
   const [doctorMode, setDoctorMode] = useState(() => {
-    return localStorage.getItem('matclaw-doctor-mode') === 'true'
+    return localStorage.getItem('matbot-doctor-mode') === 'true'
   })
 
   const toggleDoctorMode = useCallback(() => {
     setDoctorMode(prev => {
       const next = !prev
-      localStorage.setItem('matclaw-doctor-mode', String(next))
+      localStorage.setItem('matbot-doctor-mode', String(next))
       return next
     })
   }, [])
@@ -582,13 +583,13 @@ export default function ControlPlane() {
   // ── execution mode ─────────────────────────────────────────
   type ExecMode = 'ask' | 'auto' | 'plan' | 'agentic'
   const [execMode, setExecMode] = useState<ExecMode>(() => {
-    return (localStorage.getItem('matclaw-exec-mode') as ExecMode) || 'auto'
+    return (localStorage.getItem('matbot-exec-mode') as ExecMode) || 'auto'
   })
   const [showModePicker, setShowModePicker] = useState(false)
   const modePickerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    localStorage.setItem('matclaw-exec-mode', execMode)
+    localStorage.setItem('matbot-exec-mode', execMode)
   }, [execMode])
 
   useEffect(() => {
@@ -1179,7 +1180,7 @@ export default function ControlPlane() {
                     style={{ color: 'var(--text-muted)' }}
                   >
                     <Cpu className="w-8 h-8 opacity-30" />
-                    <p className="text-sm">Ask MatClaw anything about your MATLAB workspace</p>
+                    <p className="text-sm">Ask MatBot anything about your MATLAB workspace</p>
                     <div className="flex flex-wrap justify-center gap-2 mt-2 max-w-lg">
                       {[
                         'Plot a 3D surface of sin(x)·cos(y)',
@@ -1355,7 +1356,7 @@ export default function ControlPlane() {
                   }}
                 >
                   <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span>Agentic mode — MatClaw will use tools autonomously to complete your request</span>
+                  <span>Agentic mode — MatBot will use tools autonomously to complete your request</span>
                   <button
                     className="ml-auto text-[10px] opacity-60 hover:opacity-100 transition-opacity"
                     onClick={() => setExecMode('auto')}
@@ -1385,7 +1386,7 @@ export default function ControlPlane() {
                       maxHeight: '200px',
                       overflowY: 'auto',
                     }}
-                    placeholder="Ask MatClaw… (Shift+Enter for newline)"
+                    placeholder="Ask MatBot… (Shift+Enter for newline)"
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={onKey}

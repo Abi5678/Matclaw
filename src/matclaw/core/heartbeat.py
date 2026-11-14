@@ -37,14 +37,14 @@ class Heartbeat:
             self._job_manager.start()
         if self._scheduler:
             self._scheduler.start()
-        logger.info("MatClaw daemon started.")
+        logger.info("MatBot daemon started.")
 
     def stop(self) -> None:
         if self._scheduler:
             self._scheduler.stop()
         if self._job_manager:
             self._job_manager.stop()
-        logger.info("MatClaw daemon stopped.")
+        logger.info("MatBot daemon stopped.")
 
     def status(self) -> dict:
         job_summary = {}
