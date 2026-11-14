@@ -1,11 +1,11 @@
-# NVIDIA NeMo Agent Toolkit workflow: MatClaw MCP Client
+# NVIDIA NeMo Agent Toolkit workflow: MatBot MCP Client
 #
-# This workflow connects to the MatClaw MCP server and uses its tools
+# This workflow connects to the MatBot MCP server and uses its tools
 # (run_matlab_code, trigger_skill, run_workspace_auditor, etc.) with
 # a ReAct agent powered by NVIDIA Nemotron.
 #
 # Prerequisites:
-#   1. Start MatClaw MCP server with HTTP transport:
+#   1. Start MatBot MCP server with HTTP transport:
 #      python -m src.matclaw.mcp.server --http
 #      (runs at http://127.0.0.1:9901/mcp)
 #
@@ -48,7 +48,7 @@ llms:
 workflow:
   _type: react_agent
   tool_names:
-    - matclaw
+    - matbot
   llm_name: nemotron
   verbose: true
   parse_agent_response_max_retries: 3

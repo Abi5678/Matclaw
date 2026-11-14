@@ -1,8 +1,8 @@
-/** API origin for MatClaw. Prefer same-origin when UI is served by the FastAPI app. */
+/** API origin for MatBot. Prefer same-origin when UI is served by the FastAPI app. */
 export function getApiBase(): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
     const { protocol, hostname, port } = window.location
-    // Dev Vite on a non-API port → talk to the MatClaw API on 8000
+    // Dev Vite on a non-API port → talk to the MatBot API on 8000
     if (port && port !== '8000' && (hostname === 'localhost' || hostname === '127.0.0.1')) {
       return `${protocol}//${hostname}:8000`
     }

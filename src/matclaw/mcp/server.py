@@ -1,5 +1,5 @@
 """
-MatClaw MCP Server: exposes MATLAB bridge, skills, and RPI tools to LLM clients.
+MatBot MCP Server: exposes MATLAB bridge, skills, and RPI tools to LLM clients.
 
 Tools:
 - run_matlab_code: Execute MATLAB code string, return output.
@@ -20,7 +20,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
-from src.matclaw.config.base_config import MatClawSettings
+from src.matclaw.config.base_config import MatBotSettings
 from src.matclaw.config.logging_config import configure_logging
 from src.matclaw.core.experiment import ExperimentTracker
 from src.matclaw.core.rpi_executor import RPIExecutor
@@ -62,7 +62,7 @@ NL_TO_SKILL: dict[str, str] = {
 
 
 @dataclass
-class MatClawContext:
+class MatBotContext:
     """Application context with MATLAB bridge, RPI executor, and lab journal path."""
 
     matlab_bridge: MatlabBridge
@@ -74,12 +74,12 @@ class MatClawContext:
     journal_path: Path
 
 
-def _get_app_ctx(ctx: Context[ServerSession, MatClawContext]) -> MatClawContext:
-    """Extract MatClawContext from MCP context."""
+def _get_app_ctx(ctx: Context[ServerSession, MatBotContext]) -> MatBotContext:
+    """Extract MatBotContext from MCP context."""
     return ctx.request_context.lifespan_context
 
 
-def _log_to_journal(app_ctx: MatClawContext, summary: str, artifact_paths: list[str] | None = None) -> None:
+def _log_to_journal(app_ctx: MatBotContext, summary: str, artifact_paths: list[str] | None = None) -> None:
     """Append tool result to LAB_JOURNAL.md."""
     if app_ctx.journal_path:
         append_lab_journal(
@@ -115,7 +115,7 @@ def _resolve_skill_from_nl(request: str) -> str | None:
 @asynccontextmanager
 async def matclaw_lifespan(server: FastMCP):
     """Initialize MATLAB bridge, memory, RPI executor on startup."""
-    settings = MatClawSettings()
+    settings = MatBotSettings()
     configure_logging(settings.logging)
 
     matlab_bridge = MatlabBridge(settings=settings.matlab)
@@ -147,11 +147,11 @@ async def matclaw_lifespan(server: FastMCP):
     if journal_path and not journal_path.is_file():
         journal_path.parent.mkdir(parents=True, exist_ok=True)
         journal_path.write_text(
-            "# MatClaw Lab Journal\n\nAuto-generated log of MCP and sentry-triggered runs.\n\n",
+            "# MatBot Lab Journal\n\nAuto-generated log of MCP and sentry-triggered runs.\n\n",
             encoding="utf-8",
         )
 
-    app_ctx = MatClawContext(
+    app_ctx = MatBotContext(
         matlab_bridge=matlab_bridge,
         memory_manager=memory_manager,
         experiment_tracker=experiment_tracker,
@@ -161,18 +161,18 @@ async def matclaw_lifespan(server: FastMCP):
         journal_path=journal_path or Path("LAB_JOURNAL.md"),
     )
 
-    logger.info("MatClaw MCP server initialized with %d tools.", len(list_skills()))
+    logger.info("MatBot MCP server initialized with %d tools.", len(list_skills()))
 
     try:
         yield app_ctx
     finally:
         matlab_bridge.stop()
         memory_store.close()
-        logger.info("MatClaw MCP server shutdown complete.")
+        logger.info("MatBot MCP server shutdown complete.")
 
 
 mcp = FastMCP(
-    "MatClaw",
+    "MatBot",
     json_response=True,
     lifespan=matclaw_lifespan,
     host="127.0.0.1",
@@ -182,7 +182,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def run_matlab_code(code: str, ctx: Context[ServerSession, MatClawContext]) -> str:
+def run_matlab_code(code: str, ctx: Context[ServerSession, MatBotContext]) -> str:
     """
     Execute a string of MATLAB code and return the output.
 
@@ -200,7 +200,7 @@ def run_matlab_code(code: str, ctx: Context[ServerSession, MatClawContext]) -> s
 
 
 @mcp.tool()
-def trigger_skill(request: str, ctx: Context[ServerSession, MatClawContext]) -> str:
+def trigger_skill(request: str, ctx: Context[ServerSession, MatBotContext]) -> str:
     """
     Map a natural language request to a skill and run it.
 
@@ -223,7 +223,7 @@ def trigger_skill(request: str, ctx: Context[ServerSession, MatClawContext]) -> 
 
 
 def _run_skill_and_log(
-    app_ctx: MatClawContext,
+    app_ctx: MatBotContext,
     skill_name: str,
     log_source: str,
     skill_kwargs: dict | None = None,
@@ -264,7 +264,7 @@ def _run_skill_and_log(
 
 
 @mcp.tool()
-def run_workspace_auditor(ctx: Context[ServerSession, MatClawContext]) -> str:
+def run_workspace_auditor(ctx: Context[ServerSession, MatBotContext]) -> str:
     """
     Run the workspace auditor skill: scan MATLAB workspace and license state.
 
@@ -276,7 +276,7 @@ def run_workspace_auditor(ctx: Context[ServerSession, MatClawContext]) -> str:
 
 @mcp.tool()
 def run_pid_optimizer(
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     Kp: float = 1.0,
     Ki: float = 0.5,
     Kd: float = 0.1,
@@ -314,7 +314,7 @@ def run_pid_optimizer(
 
 @mcp.tool()
 def run_simulink_runner(
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     model_name: str,
     stop_time: float = 10.0,
 ) -> str:
@@ -350,7 +350,7 @@ def run_simulink_runner(
 
 @mcp.tool()
 def run_report_generator(
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     project_id: str = "report",
 ) -> str:
     """
@@ -387,9 +387,9 @@ def run_report_generator(
 
 
 @mcp.tool()
-def list_available_skills(ctx: Context[ServerSession, MatClawContext]) -> str:
+def list_available_skills(ctx: Context[ServerSession, MatBotContext]) -> str:
     """
-    List all installed MatClaw skills with their descriptions.
+    List all installed MatBot skills with their descriptions.
 
     Use this to discover which skills are available before calling trigger_skill.
     """
@@ -404,7 +404,7 @@ def list_available_skills(ctx: Context[ServerSession, MatClawContext]) -> str:
 
 @mcp.tool()
 def list_experiments(
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     skill_name: str = "",
     last_n: int = 10,
 ) -> str:
@@ -422,7 +422,7 @@ def list_experiments(
 
 @mcp.tool()
 def compare_experiments(
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     experiment_ids: list[str],
 ) -> str:
     """Compare experiments side-by-side (metrics/status)."""
@@ -448,7 +448,7 @@ def compare_experiments(
 
 @mcp.tool()
 def get_experiment_trend(
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     skill_name: str,
     metric_key: str,
     last_n: int = 20,
@@ -467,7 +467,7 @@ def get_experiment_trend(
 
 
 @mcp.tool()
-def read_matlab_file(file_path: str, ctx: Context[ServerSession, MatClawContext]) -> str:
+def read_matlab_file(file_path: str, ctx: Context[ServerSession, MatBotContext]) -> str:
     """Read a MATLAB .m file from the workspace and return its contents.
     Use this to inspect code before deciding to fix or run it."""
     from src.matclaw.security.file_access import guard_file_access
@@ -484,7 +484,7 @@ def read_matlab_file(file_path: str, ctx: Context[ServerSession, MatClawContext]
 @mcp.tool()
 def analyze_fix_run(
     file_path: str,
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     action: str = "fix_and_run",
 ) -> str:
     """Analyze a .m file for errors, fix them, and run it autonomously.
@@ -533,11 +533,11 @@ def analyze_fix_run(
 @mcp.tool()
 def query_memory(
     question: str,
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     types: str = "",
     skill_name: str = "",
 ) -> str:
-    """Search MatClaw's long-term knowledge base using natural language.
+    """Search MatBot's long-term knowledge base using natural language.
 
     Use this to ask questions like:
     - "What PID gains worked best for motor control?"
@@ -571,7 +571,7 @@ def query_memory(
 def best_experiment_tool(
     skill_name: str,
     metric_key: str,
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     minimize: bool = False,
 ) -> str:
     """Find the experiment with the best value for a given metric.
@@ -601,7 +601,7 @@ def best_experiment_tool(
 def experiment_trend_range(
     skill_name: str,
     metric_key: str,
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     start_date: str = "",
     end_date: str = "",
 ) -> str:
@@ -633,7 +633,7 @@ def experiment_trend_range(
 @mcp.tool()
 def skill_summary(
     skill_name: str,
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
 ) -> str:
     """Return aggregate statistics for a skill: total runs, success rate, best metrics."""
     import json
@@ -646,7 +646,7 @@ def skill_summary(
 
 @mcp.tool()
 def consolidate_memory(
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     skill_name: str = "",
 ) -> str:
     """Trigger LLM-powered memory consolidation to extract lessons and strategies.
@@ -676,7 +676,7 @@ def consolidate_memory(
 def store_lesson(
     skill_name: str,
     lesson: str,
-    ctx: Context[ServerSession, MatClawContext],
+    ctx: Context[ServerSession, MatBotContext],
     cause: str = "",
     effect: str = "",
 ) -> str:

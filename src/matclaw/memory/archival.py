@@ -1,5 +1,5 @@
 """
-Archival and cleanup utilities for MatClaw long-term memory.
+Archival and cleanup utilities for MatBot long-term memory.
 
 Policies:
 - Raw experiments older than N days → moved to archive SQLite.
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class ArchivalManager:
-    """Manages cleanup, deduplication, and archival of MatClaw memory stores."""
+    """Manages cleanup, deduplication, and archival of MatBot memory stores."""
 
     def __init__(
         self,

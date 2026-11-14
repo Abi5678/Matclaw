@@ -1,5 +1,5 @@
 """
-MatClaw: High-end autonomous MATLAB agent bridge.
+MatBot: High-end autonomous MATLAB agent bridge.
 
 This package contains:
 - Configuration & logging setup.

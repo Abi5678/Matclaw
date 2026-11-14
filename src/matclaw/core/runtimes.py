@@ -1,5 +1,5 @@
 """
-General-purpose execution runtimes for MatClaw.
+General-purpose execution runtimes for MatBot.
 MATLAB, Python, and Shell as peer runtimes — the core of OpenClaw-style versatility.
 """
 from __future__ import annotations

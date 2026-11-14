@@ -546,10 +546,10 @@ class DebugAgent:
         if insert_at < 0:
             return code
         if min_args is not None:
-            check = f"    if nargin < {min_args}, error('MatClaw:NotEnoughInputs', 'Not enough input arguments.'); end\n"
+            check = f"    if nargin < {min_args}, error('MatBot:NotEnoughInputs', 'Not enough input arguments.'); end\n"
         elif max_args:
             # We don't know max; just add a comment so user can fix
-            check = "    % MatClaw: consider validating nargin to avoid too many inputs\n"
+            check = "    % MatBot: consider validating nargin to avoid too many inputs\n"
         else:
             return code
         lines.insert(insert_at, check)
@@ -631,10 +631,10 @@ class DebugAgent:
         else:
             shutil.copy2(source, dest)
 
-        # Append MatClaw debug note
+        # Append MatBot debug note
         try:
             with dest.open("a", encoding="utf-8") as fh:
-                fh.write("\n% MatClaw autonomous debug copy. Original: " + str(source) + "\n")
+                fh.write("\n% MatBot autonomous debug copy. Original: " + str(source) + "\n")
         except Exception:
             logger.exception("Failed to annotate temporary MATLAB debug file: %s", dest)
 

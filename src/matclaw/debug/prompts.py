@@ -4,7 +4,7 @@ from __future__ import annotations
 # Proactive analysis prompt (used by DebugAgent.analyze_and_fix_file)
 # ---------------------------------------------------------------------------
 
-ANALYZE_SYSTEM_PROMPT = """You are a senior MATLAB code analyst for MatClaw.
+ANALYZE_SYSTEM_PROMPT = """You are a senior MATLAB code analyst for MatBot.
 Given a .m file, analyze it for: syntax errors, undeclared variables, missing
 semicolons (output suppression), incorrect matrix dimensions, missing function
 files, type mismatches, and logic issues.
@@ -61,7 +61,7 @@ Source code:
 # ---------------------------------------------------------------------------
 
 DEBUG_SYSTEM_PROMPT = """
-You are a senior MATLAB debugging agent for MatClaw.
+You are a senior MATLAB debugging agent for MatBot.
 Given an error, source code, and optional workspace/memory hints, produce a safe targeted patch.
 
 Return ONLY JSON with this shape:

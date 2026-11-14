@@ -1,5 +1,5 @@
 """
-MatClaw FastAPI backend — serves the React Control Plane UI.
+MatBot FastAPI backend — serves the React Control Plane UI.
 Endpoints:
   POST /api/run          — NL → skill dispatch
   GET  /api/skills       — list available skills
@@ -35,7 +35,7 @@ if str(ROOT) not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
-from src.matclaw.config.base_config import MatClawSettings
+from src.matclaw.config.base_config import MatBotSettings
 from src.matclaw.matlab.matlab_bridge import MatlabBridge
 from src.matclaw.memory.memory_manager import MemoryManager
 from src.matclaw.core.experiment import ExperimentTracker
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # ── global singletons ───────────────────────────────────────────────────────
-settings = MatClawSettings()
+settings = MatBotSettings()
 bridge = MatlabBridge(settings=settings.matlab)
 memory = MemoryManager(persist_directory=str(ROOT / ".matclaw_chromadb"))
 tracker = ExperimentTracker(str(ROOT / ".matclaw_experiments.sqlite3"))
@@ -100,9 +100,9 @@ _heartbeat = Heartbeat(scheduler=_scheduler, job_manager=_job_manager)
 
 import json
 
-# ── MatClaw Persona ────────────────────────────────────────────────────────
+# ── MatBot Persona ────────────────────────────────────────────────────────
 MATCLAW_PERSONA = """\
-You are MatClaw, a brilliant and friendly MATLAB & engineering AI assistant.
+You are MatBot, a brilliant and friendly MATLAB & engineering AI assistant.
 
 Personality:
 - Warm, enthusiastic about engineering — like a favorite TA who genuinely loves the subject
@@ -146,7 +146,7 @@ IMPORTANT: If a user asks you to "plot", "draw", "compute", "run", "simulate", o
 
 Rules for code generation:
 - Use ONLY built-in MATLAB functions (plot, surf, mesh, fft, disp, fprintf, etc.)
-- Do NOT call LLM, AI, GPT, Claude, MatClaw, or any non-MATLAB function
+- Do NOT call LLM, AI, GPT, Claude, MatBot, or any non-MATLAB function
 - For animations, use drawnow inside loops
 - For projects, put each function in its own .m file; first file is the entry point
 
@@ -551,7 +551,7 @@ async def lifespan(app: FastAPI):
     _runtime_registry.register(ShellRuntime(cwd=str(ROOT)))
     tool_registry.discover()
     _heartbeat.start()
-    logger.info("MatClaw enterprise daemon started. Runtimes: %s",
+    logger.info("MatBot enterprise daemon started. Runtimes: %s",
                 [r["name"] for r in _runtime_registry.list_runtimes()])
 
     async def _connect_matlab_bg() -> None:
@@ -584,11 +584,11 @@ async def lifespan(app: FastAPI):
             await _headless_figure_task
     _headless_figure_task = None
     _heartbeat.stop()
-    logger.info("MatClaw daemon stopped.")
+    logger.info("MatBot daemon stopped.")
 
 
 # ── app ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title="MatClaw API", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="MatBot API", version="2.0.0", lifespan=lifespan)
 
 # Initialize subsystems
 agent_registry = AgentRegistry()
@@ -1695,7 +1695,7 @@ async def run_nl(req: RunRequest):
 
             # Guard against hallucinated functions
             if code:
-                bad = [r"\bLLM\b", r"\bAI\s*\(", r"\bMatClaw\s*\(", r"\bClaude\s*\("]
+                bad = [r"\bLLM\b", r"\bAI\s*\(", r"\bMatBot\s*\(", r"\bClaude\s*\("]
                 if any(re.search(p, code, re.IGNORECASE) for p in bad):
                     code = find_demo(req.effective_text) or ""
 
@@ -2400,7 +2400,7 @@ async def run_nl_stream(req: RunRequest):
                             router.agent_registry.get_agent(node.agent_id)
                             if node.agent_id else None
                         )
-                        agent_label = agent_def.name if agent_def else (node.agent_id or "MatClaw")
+                        agent_label = agent_def.name if agent_def else (node.agent_id or "MatBot")
                         yield _sse("tool_start", {
                             "action": "swarm_step",
                             "label": f"[{agent_label}] {node.description}",
@@ -2704,7 +2704,7 @@ def get_audit_log(limit: int = 100):
 @app.post("/api/gateway/webhook")
 async def webhook_gateway(req: WebhookRequest):
     """
-    Generic inbound webhook — routes any text message through the MatClaw NL pipeline.
+    Generic inbound webhook — routes any text message through the MatBot NL pipeline.
     Slack slash commands, Discord webhooks, n8n, Zapier can all POST here.
     """
     request_id = str(uuid.uuid4())

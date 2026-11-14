@@ -1,5 +1,5 @@
 """
-MatClaw skills: pluggable capabilities (Workspace Auditor, Live Documenter, PID Optimizer, etc.).
+MatBot skills: pluggable capabilities (Workspace Auditor, Live Documenter, PID Optimizer, etc.).
 
 Each skill lives in a subdirectory:
   skills/[skill_name]/
@@ -52,7 +52,7 @@ def load_skill_logic(skill_name: str) -> Any | None:
     if not path.is_file():
         return None
     import importlib.util
-    spec = importlib.util.spec_from_file_location(f"matclaw.skills.{skill_name}.logic", path)
+    spec = importlib.util.spec_from_file_location(f"matbot.skills.{skill_name}.logic", path)
     if spec is None or spec.loader is None:
         return None
     mod = importlib.util.module_from_spec(spec)

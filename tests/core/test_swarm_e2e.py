@@ -9,7 +9,7 @@ from src.matclaw.llm.llm_client import call_chat_completion
 
 logging.basicConfig(level=logging.ERROR)
 
-PROMPT = """You are the MatClaw Master Orchestrator.
+PROMPT = """You are the MatBot Master Orchestrator.
 I will give you a complex task. You must break it into a Directed Acyclic Graph (DAG) plan of execution.
 For each subtask node, you must delegate it to one of the active specialized agents.
 

@@ -1,4 +1,4 @@
-"""Security utilities for MatClaw (execution guardrails)."""
+"""Security utilities for MatBot (execution guardrails)."""
 
 from .guardrail import GuardrailDecision, guard_matlab_call
 

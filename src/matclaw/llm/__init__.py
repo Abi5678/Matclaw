@@ -1,5 +1,5 @@
 """
-MatClaw LLM clients: Nemotron (NVIDIA NIM), tools, and self-healing.
+MatBot LLM clients: Nemotron (NVIDIA NIM), tools, and self-healing.
 """
 
 from src.matclaw.llm.nemotron_client import (

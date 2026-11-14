@@ -1,6 +1,6 @@
-# MatClaw — Setup Guide
+# MatBot — Setup Guide
 
-MatClaw is an AI assistant for MATLAB engineers. It lets you write, run, and debug MATLAB code through a chat interface, orchestrate multi-agent workflows, and manage long-running experiments — all from your browser.
+MatBot is an AI assistant for MATLAB engineers. It lets you write, run, and debug MATLAB code through a chat interface, orchestrate multi-agent workflows, and manage long-running experiments — all from your browser.
 
 ---
 
@@ -19,7 +19,7 @@ MatClaw is an AI assistant for MATLAB engineers. It lets you write, run, and deb
 
 **Requires:** Docker Desktop — download at [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop)
 
-### 1. Download MatClaw
+### 1. Download MatBot
 
 ```bash
 git clone https://github.com/Abi5678/Matclaw.git
@@ -69,7 +69,7 @@ docker compose down -v     # stop and wipe all stored data
 
 **Requires:** Python 3.11+, Node.js 18+
 
-### 1. Download MatClaw
+### 1. Download MatBot
 
 ```bash
 git clone https://github.com/Abi5678/Matclaw.git
@@ -86,7 +86,7 @@ This will:
 - Create a Python virtual environment
 - Install all dependencies
 - Build the web interface
-- Create a `matclaw` command on your system
+- Create a `MatBot` command on your system
 
 ### 3. Add your API key
 
@@ -106,12 +106,12 @@ MATCLAW_MATLAB__ENABLED=true
 ### 4. Start
 
 ```bash
-matclaw
+matbot
 ```
 
 Your browser will open automatically at **http://localhost:8000**.
 
-If the `matclaw` command isn't found, run `./start.sh` from the project folder instead.
+If the `MatBot` command isn't found, run `./start.sh` from the project folder instead.
 
 ---
 
@@ -156,10 +156,10 @@ You can also add and switch models at any time from **Settings → Models** insi
 
 ---
 
-## What MatClaw can do
+## What MatBot can do
 
 ### Chat
-Ask anything about MATLAB, engineering, or your data. MatClaw writes and runs code, generates plots, and explains results.
+Ask anything about MATLAB, engineering, or your data. MatBot writes and runs code, generates plots, and explains results.
 
 > *"Plot a Bode diagram for a second-order system with ωn = 10 and ζ = 0.5"*
 > *"Why is my PID controller oscillating?"*
@@ -169,7 +169,7 @@ Ask anything about MATLAB, engineering, or your data. MatClaw writes and runs co
 Create specialised AI sub-agents with custom system prompts and tool access. Use **Smart Generate** to create an agent from a brief description, or **Optimize Prompt** to expand a rough idea into a detailed system prompt.
 
 ### Swarm / DAG
-Send a complex task to a multi-agent swarm. MatClaw breaks it into a dependency graph and routes each step to the right specialist agent.
+Send a complex task to a multi-agent swarm. MatBot breaks it into a dependency graph and routes each step to the right specialist agent.
 
 ### Code Editor
 Open generated `.m` files directly in the built-in Monaco editor. Edit and click **Run** to execute in MATLAB without leaving the browser.
@@ -181,7 +181,7 @@ Add any OpenAI-compatible API endpoint as a custom model. Click a model to make 
 
 ## MATLAB setup (native install only)
 
-MatClaw connects to MATLAB via the MATLAB Engine for Python. Requirements:
+MatBot connects to MATLAB via the MATLAB Engine for Python. Requirements:
 
 - MATLAB R2021a or later
 - MATLAB Engine for Python installed:
@@ -216,9 +216,9 @@ Nothing is sent anywhere except your chosen LLM provider's API.
 → Check your API key in `.env`. Make sure there are no extra spaces or quotes around the value.
 
 **MATLAB shows as offline (red dot)**
-→ Make sure MATLAB is running before starting MatClaw. Click the red dot in the app to reconnect.
+→ Make sure MATLAB is running before starting MatBot. Click the red dot in the app to reconnect.
 
-**`matclaw` command not found after install**
+**`MatBot` command not found after install**
 → Run `./start.sh` from the project folder, or open a new terminal tab and try again.
 
 **Docker build fails on first run**

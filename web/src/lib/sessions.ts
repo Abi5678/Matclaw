@@ -125,8 +125,8 @@ export interface Session {
   messages: Message[]
 }
 
-const SESSIONS_KEY = 'matclaw_sessions'
-const ACTIVE_KEY   = 'matclaw_active_session'
+const SESSIONS_KEY = 'matbot_sessions'
+const ACTIVE_KEY   = 'matbot_active_session'
 
 // ── persistence helpers ──────────────────────────────────────────────────────
 

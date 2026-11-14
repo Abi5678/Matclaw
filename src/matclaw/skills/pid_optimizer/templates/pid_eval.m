@@ -1,4 +1,4 @@
-% MatClaw_Header: PID evaluation template (2nd-order plant, PID in feedback).
+% MatBot_Header: PID evaluation template (2nd-order plant, PID in feedback).
 % Simulates step response and returns rise time and overshoot for Python.
 % In production this can be replaced by a Simulink run or a real model.
 function out = pid_eval(Kp, Ki, Kd)

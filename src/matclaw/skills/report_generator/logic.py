@@ -73,7 +73,7 @@ def execute(
         generated_at = plan_data.get("generated_at", "")
 
         lines = [
-            "# MatClaw Project Report",
+            "# MatBot Project Report",
             "",
             f"**Generated:** {generated_at}",
             f"**Project:** {project_id or 'General'}",

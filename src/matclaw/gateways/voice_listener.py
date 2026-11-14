@@ -4,13 +4,13 @@ Voice Gateway (Nemotron-3 VoiceChat) for interruptible, low-latency intent execu
 This module is designed to:
   - stream user audio to a Nemotron-3 VoiceChat NIM endpoint (async)
   - parse model-emitted "voice intent" events early (speech-to-intent)
-  - trigger the MatClaw RPI loop (or safe MATLAB execution) immediately
+  - trigger the MatBot RPI loop (or safe MATLAB execution) immediately
   - cancel/interrupt in-flight actions when new speech arrives
 
 Note:
   The exact wire protocol for Nemotron VoiceChat depends on deployment.
   This implementation focuses on an extensible client interface and safe
-  intent routing into MatClaw's existing RPI + MATLAB execution guardrails.
+  intent routing into MatBot's existing RPI + MATLAB execution guardrails.
 """
 
 from __future__ import annotations
@@ -147,14 +147,14 @@ class NemotronVoiceChatStreamClient:
 
 class VoiceGateway:
     """
-    Route voice intents into MatClaw's RPI executor / MATLAB bridge.
+    Route voice intents into MatBot's RPI executor / MATLAB bridge.
 
     For "interruptible speech", the gateway cancels any in-flight action when it
     receives a new intent event.
     """
 
     SYSTEM_PROMPT = (
-        "You are a voice controller for MatClaw.\n"
+        "You are a voice controller for MatBot.\n"
         "Convert the user's spoken command into a single JSON object with:\n"
         "{intent, skill_name, matlab_code, query}.\n"
         "Rules:\n"

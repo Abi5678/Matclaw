@@ -1,5 +1,5 @@
 """
-Typed semantic knowledge store for MatClaw long-term memory.
+Typed semantic knowledge store for MatBot long-term memory.
 
 Uses a **separate ChromaDB collection** (``matclaw_knowledge``) that shares the
 existing ``PersistentClient`` from :class:`MemoryManager`.  This keeps raw
@@ -53,7 +53,7 @@ class KnowledgeBase:
         self._collection = client.get_or_create_collection(
             name=self.COLLECTION_NAME,
             embedding_function=embed_fn,
-            metadata={"description": "MatClaw long-term knowledge (results, lessons, strategies)"},
+            metadata={"description": "MatBot long-term knowledge (results, lessons, strategies)"},
         )
         logger.info("KnowledgeBase collection ready (%d entries).", self._collection.count())
 

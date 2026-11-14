@@ -3,12 +3,12 @@ Application entry helpers: wire shared ``RPIExecutor`` and gateways.
 
 Example — start the hybrid (voice + clipboard) keystroke gateway alongside your app::
 
-    from src.matclaw.config.base_config import MatClawSettings
+    from src.matclaw.config.base_config import MatBotSettings
     from src.matclaw.core.rpi_executor import RPIExecutor
     from src.matclaw.gateways.voice_client import BufferedVoiceClient
     from src.matclaw.main import start_hybrid_keystroke_gateway
 
-    settings = MatClawSettings()
+    settings = MatBotSettings()
     executor = RPIExecutor(matlab_bridge=bridge, memory_manager=memory)
     voice_client = BufferedVoiceClient()
 
@@ -30,7 +30,7 @@ from typing import Any
 from src.matclaw.gateways.voice_client import VoiceClient
 
 if TYPE_CHECKING:
-    from src.matclaw.config.base_config import MatClawSettings
+    from src.matclaw.config.base_config import MatBotSettings
     from src.matclaw.core.rpi_executor import RPIExecutor
 
 
@@ -38,7 +38,7 @@ def start_hybrid_keystroke_gateway(
     executor: RPIExecutor,
     voice_client: VoiceClient,
     *,
-    settings: MatClawSettings | None = None,
+    settings: MatBotSettings | None = None,
     autostart: bool = True,
 ) -> Any:
     """
@@ -47,7 +47,7 @@ def start_hybrid_keystroke_gateway(
     Args:
         executor: Shared ``RPIExecutor`` (same instance as Telegram/Sentry).
         voice_client: Object implementing ``VoiceClient`` (e.g. ``BufferedVoiceClient``).
-        settings: Optional ``MatClawSettings`` for NL routing inside ``run_flow``.
+        settings: Optional ``MatBotSettings`` for NL routing inside ``run_flow``.
         autostart: If True, call ``start()`` immediately (background pynput thread).
 
     Returns:

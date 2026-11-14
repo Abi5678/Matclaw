@@ -220,7 +220,7 @@ class ProductionSettings(BaseModel):
     )
 
 
-class MatClawSettings(BaseSettings):
+class MatBotSettings(BaseSettings):
     """
     Typed application configuration, loaded from environment variables where present.
     """

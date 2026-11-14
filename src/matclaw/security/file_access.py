@@ -1,5 +1,5 @@
 """
-File access guardrails for MatClaw.
+File access guardrails for MatBot.
 
 Validates file paths before reading or modifying .m files and other
 MATLAB workspace files.  Mirrors the pattern in guardrail.py:
@@ -45,8 +45,8 @@ def _search_matlab_path(filename: str) -> Path | None:
     """Try to find a file on MATLAB's path using ``which()``."""
     try:
         from src.matclaw.matlab.matlab_bridge import MatlabBridge, MatlabCallRequest
-        from src.matclaw.config.base_config import MatClawSettings
-        settings = MatClawSettings()
+        from src.matclaw.config.base_config import MatBotSettings
+        settings = MatBotSettings()
         bridge = MatlabBridge(settings=settings.matlab)
         bridge.start()
         if not bridge.is_healthy():

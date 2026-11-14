@@ -127,7 +127,7 @@ else
     sgtitle('2D racing demo — bicycle model + ray LIDAR (base MATLAB)');
 end
 
-% Figure is captured by MatClaw (batch/engine wrappers). For bare MATLAB CLI:
+% Figure is captured by MatBot (batch/engine wrappers). For bare MATLAB CLI:
 %   saveas(fig, 'car_racing_2d_sim.png', 'png');
 
 %% --- local functions -------------------------------------------------

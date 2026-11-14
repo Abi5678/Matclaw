@@ -1,11 +1,11 @@
 STRUCTURE.md
 ============
 
-This file mirrors the high-level architecture and layout planned for MatClaw. Implementation will evolve from this scaffold.
+This file mirrors the high-level architecture and layout planned for MatBot. Implementation will evolve from this scaffold.
 
 ## 1. High-Level Architecture
 
-MatClaw is an always-on Python daemon that:
+MatBot is an always-on Python daemon that:
 
 - Exposes an MCP-compliant interface to LLMs.
 - Bridges to a local MATLAB instance via the MATLAB Engine for Python.
@@ -66,7 +66,7 @@ Skill discovery: `skills.list_skills()`, `skills.get_skill_instructions(name)`, 
 
 ## Autonomous Lab Log (Million-Dollar Feature)
 
-- **LAB_JOURNAL.md** (config: `lab_journal.path`): every time the **Sentry** triggers a run, MatClaw appends a line.
+- **LAB_JOURNAL.md** (config: `lab_journal.path`): every time the **Sentry** triggers a run, MatBot appends a line.
 - **Format**: `- **YYYY-MM-DD HH:MM AM/PM** — {summary} — [artifact1](path) [artifact2](path)`
 - **Summary**: e.g. "Detected .mat file: data.mat. Variables: 5, Total: 12.00 MB" or "File name suggests PID tuning; consider running pid_optimizer."
 - **Artifact linking**: the journal line links to the `.mat` (and in future `.png` plots) used in that run.
@@ -75,9 +75,9 @@ Skill discovery: `skills.list_skills()`, `skills.get_skill_instructions(name)`, 
 ## 2. Repository Folder Hierarchy (Planned)
 
 ```text
-matclaw/
+MatBot/
   ├─ src/
-  │   ├─ matclaw/
+  │   ├─ MatBot/
   │   │   ├─ __init__.py
   │   │   │
   │   │   ├─ config/
@@ -148,7 +148,7 @@ matclaw/
   │       └─ matclaw_cli.py
   │
   ├─ matlab/
-  │   ├─ +matclaw/
+  │   ├─ +MatBot/
   │   │   ├─ init.m
   │   │   ├─ run_task.m
   │   │   └─ utils/

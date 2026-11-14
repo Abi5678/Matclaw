@@ -1,5 +1,5 @@
 """
-Agentic loop engine — Phase 1 of MatClaw autonomous capabilities.
+Agentic loop engine — Phase 1 of MatBot autonomous capabilities.
 
 Replaces the single-pass LLM→execute flow with an iterative observe-think-act
 cycle where the LLM decides which tool to call next after seeing each result.
@@ -58,7 +58,7 @@ def _extract_runnable_matlab(text: str) -> str:
 
 # ── Agentic system prompt ─────────────────────────────────────────────────────
 
-AGENTIC_SYSTEM = """You are MatClaw, an autonomous AI agent with full control over a MATLAB workspace.
+AGENTIC_SYSTEM = """You are MatBot, an autonomous AI agent with full control over a MATLAB workspace.
 
 You are running in AGENTIC MODE. Use the provided tools to complete tasks step by step.
 
@@ -187,7 +187,7 @@ async def run_agentic_loop(
     *,
     user_text: str,
     history: list[dict],          # [{role, text}] from the frontend
-    settings: Any,                 # MatClawSettings
+    settings: Any,                 # MatBotSettings
     tool_registry: ToolRegistry,
     runtime_dispatcher: Callable,  # async fn(name, inputs) → (output_str, plots)
     max_iterations: int | None = None,

@@ -1,4 +1,4 @@
-% MatClaw_Header: Workspace Auditor v1.1
+% MatBot_Header: Workspace Auditor v1.1
 % Returns workspace summary for Python. ONLY scalar struct fields (no arrays/cells).
 % FIX: Python engine rejects struct arrays and cell arrays - use pipe-delimited strings.
 function out = workspace_audit()

@@ -56,7 +56,7 @@ class JobManager:
         if self._thread is not None and self._thread.is_alive():
             return
         self._shutdown.clear()
-        self._thread = threading.Thread(target=self._run_loop, name="matclaw-job-manager", daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, name="matbot-job-manager", daemon=True)
         self._thread.start()
         self._workers_started.wait(timeout=3)
 

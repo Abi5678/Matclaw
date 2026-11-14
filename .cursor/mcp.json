@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "matclaw": {
+    "matbot": {
       "command": "python",
       "args": [
         "-m",

@@ -1,5 +1,5 @@
 """
-Base contract for MatClaw skills (RPI loop + resilience).
+Base contract for MatBot skills (RPI loop + resilience).
 
 Every skill logic module should expose research(), plan(), and execute()
 and use Pydantic for data passed to/from MATLAB.

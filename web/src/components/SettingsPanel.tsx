@@ -97,7 +97,7 @@ export default function SettingsPanel() {
         <div>
           <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Settings</h1>
           <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
-            Customize your MatClaw workspace
+            Customize your MatBot workspace
           </p>
         </div>
 
@@ -229,7 +229,7 @@ export default function SettingsPanel() {
         </SettingsSection>
 
         {/* ── About ──────────────────────────────────────────────── */}
-        <SettingsSection title="About MatClaw">
+        <SettingsSection title="About MatBot">
           <div
             className="rounded-xl p-4 backdrop-blur-sm"
             style={{
@@ -245,7 +245,7 @@ export default function SettingsPanel() {
                 M
               </div>
               <div>
-                <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>MatClaw v2.0</p>
+                <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>MatBot v2.0</p>
                 <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                   The AI that actually does things
                 </p>

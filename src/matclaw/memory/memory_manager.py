@@ -78,7 +78,7 @@ class MemoryManager:
             self._collection = self._client.get_or_create_collection(
                 name=self.COLLECTION_NAME,
                 embedding_function=self._embed_fn,
-                metadata={"description": "MatClaw skill artifacts and lessons learned"},
+                metadata={"description": "MatBot skill artifacts and lessons learned"},
             )
             logger.info("MemoryManager ChromaDB ready at %s", self._persist_dir)
 

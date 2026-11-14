@@ -312,7 +312,7 @@ function NodeInspector({
 // ── Agent Palette ────────────────────────────────────────────────────────────
 function AgentPalette({ agents }: { agents: Agent[] }) {
   const onDragStart = (e: React.DragEvent, agent: Agent) => {
-    e.dataTransfer.setData('application/matclaw-agent', JSON.stringify(agent))
+    e.dataTransfer.setData('application/matbot-agent', JSON.stringify(agent))
     e.dataTransfer.effectAllowed = 'move'
   }
 
@@ -449,7 +449,7 @@ export default function PipelineCanvas() {
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
-    const raw = e.dataTransfer.getData('application/matclaw-agent')
+    const raw = e.dataTransfer.getData('application/matbot-agent')
     if (!raw) return
     const agent: Agent = JSON.parse(raw)
     const rect = reactFlowWrapper.current?.getBoundingClientRect()

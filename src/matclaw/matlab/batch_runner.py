@@ -1,5 +1,5 @@
 """
-MatClaw Batch Runner — executes MATLAB scripts in isolated subprocesses.
+MatBot Batch Runner — executes MATLAB scripts in isolated subprocesses.
 
 This is the robust path for complex simulations. Each run:
 - Spawns a fresh `matlab -batch` process (isolated, can't crash the desktop)
@@ -49,7 +49,7 @@ def split_matlab_script_and_local_functions(code: str) -> tuple[str, str]:
     """
     Split MATLAB source into the executable script body and any trailing local
     function block(s). Local functions must appear at the end of a .m file;
-    MatClaw wrappers that append save/close boilerplate must insert that
+    MatBot wrappers that append save/close boilerplate must insert that
     boilerplate *before* those functions, not after the entire user paste.
     """
     m = re.search(r"(?m)^function\s", code)
@@ -177,7 +177,7 @@ def _build_script(code: str, save_path: str) -> str:
         "close all;\n"
     )
     header = (
-        "% MatClaw batch execution — headless mode\n"
+        "% MatBot batch execution — headless mode\n"
         "set(0, 'DefaultFigureVisible', 'off');\n"
         "set(0, 'DefaultFigureRenderer', 'painters');\n"
         "\n"

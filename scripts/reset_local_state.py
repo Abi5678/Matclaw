@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Remove local MatClaw persistence: semantic memory (ChromaDB), sessions, experiments,
+Remove local MatBot persistence: semantic memory (ChromaDB), sessions, experiments,
 episodic log, pipelines, scheduler DB, async state, plot files, and optional caches.
 
 Does not delete: .env, versioned agent definitions (src/matclaw/agents/agents_db.json),
@@ -66,7 +66,7 @@ def _clear_plots_dir(plots_dir: Path, dry_run: bool) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Reset MatClaw local state (memory, history, plots).")
+    ap = argparse.ArgumentParser(description="Reset MatBot local state (memory, history, plots).")
     ap.add_argument("--dry-run", action="store_true", help="Print actions only.")
     ap.add_argument("--kill-server", action="store_true", help="SIGKILL any process listening on port 8000 (typical API).")
     ap.add_argument("--port", type=int, default=8000, help="Port for --kill-server (default 8000).")

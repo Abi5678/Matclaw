@@ -6,11 +6,11 @@ For a future live golden eval (agentic + MATLAB), use a scheduled/self-hosted jo
 mocked tests in `tests/core/test_agentic_loop_limits.py`. Ops hooks: `/metrics`, `/health`.
 """
 
-from src.matclaw.config.base_config import MatClawSettings
+from src.matclaw.config.base_config import MatBotSettings
 
 
 def test_matclaw_settings_includes_production_block():
-    s = MatClawSettings()
+    s = MatBotSettings()
     assert s.production.memory_n_results >= 1
     assert s.production.max_agentic_wall_seconds >= 30
     assert isinstance(s.production.soft_cost_cap_usd_per_task, float)
